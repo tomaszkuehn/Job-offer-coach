@@ -330,6 +330,8 @@
 
     <button class="btn" id="saveBtn" style="width:100%">Save configuration</button>
     <div class="status" id="saveStatus"></div>
+    <button class="btn secondary" id="exportBtn" style="width:100%; margin-top:8px" title="Extract CV and Cover Letters from the last application package in this conversation and convert them to ODT (requires pandoc)">Export CV & Cover Letter (ODT)</button>
+    <div class="status" id="exportStatus"></div>
   </aside>
 
   <main class="main">
@@ -1045,6 +1047,42 @@
     });
 
     document.getElementById('saveBtn').addEventListener('click', saveConfig);
+
+    // Export the latest application package (CV + Cover Letters) as ODT files
+    document.getElementById('exportBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('exportBtn');
+      const status = document.getElementById('exportStatus');
+      if (!currentConvId) {
+        status.textContent = 'Save the conversation first — there is nothing to export yet.';
+        status.style.color = '#b25e09';
+        setTimeout(() => { status.textContent = ''; status.style.color = ''; }, 4000);
+        return;
+      }
+      btn.disabled = true;
+      status.style.color = '';
+      status.textContent = 'Exporting…';
+      try {
+        const res = await fetch('/api/export-package', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversationId: currentConvId })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          status.style.color = '#1e7e34';
+          status.textContent = 'Exported: ' + data.exported.join(', ').replaceAll('_', ' ');
+        } else {
+          status.style.color = '#a12b2b';
+          status.textContent = data.error || 'Export failed';
+        }
+      } catch (e) {
+        status.style.color = '#a12b2b';
+        status.textContent = 'Export failed: ' + e.message;
+      } finally {
+        btn.disabled = false;
+        setTimeout(() => { status.textContent = ''; status.style.color = ''; }, 6000);
+      }
+    });
 
     function showOverlay() {
       overlay.classList.add('show');

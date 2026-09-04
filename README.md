@@ -38,6 +38,7 @@ The RAG list in the UI shows **only the files attached to the current conversati
 ## Requirements
 
 - Node.js 18+ (uses the global `fetch`)
+- [pandoc](https://pandoc.dev) on PATH — only for the ODT export feature
 
 ## Installation and running
 
@@ -75,20 +76,45 @@ Click **Save configuration** (the button pulses red when there are unsaved chang
 - Clicking a name in the list **restores** the conversation together with its RAG files. The browsed conversation stays in place on the list and is highlighted in green.
 - **✎** renames, **✕** deletes a conversation.
 
+### Exporting CV & Cover Letters (ODT)
+
+When the model produces an application package (CV + cover letter sections
+`4a/4b/4c`), the sidebar button **"Export CV & Cover Letter (ODT)"** extracts
+the sections and converts them to OpenDocument Text with **pandoc**
+(requires `pandoc` on PATH).
+
+- Each part is taken from the **latest** assistant message containing it —
+  a full package, a partial package update, or a standalone CV regeneration
+  (an `# TOMASZ KUEHN ...` message) all count, so the newest version always wins.
+- **Indexed file names**: every export creates new files, never overwrites:
+  `<conversation>_CV_1.odt`, `..._CV_2.odt`, `..._CoverLetter_EN_3.odt`, …
+  Re-exporting **unchanged** content reuses the existing file (content-hash
+  manifest per conversation) instead of bumping the index.
+- Output goes to `moje_dok/odt/`; styling comes from a bundled reference
+  document (`tools/reference-liberation.odt`): Liberation Sans/Serif fonts,
+  10.5 pt base size, compact paragraph spacing, table borders (pandoc emits
+  borderless tables — the server patches them in), single-line horizontal
+  rules, and `—`/`–` converted to plain `-`.
+
 ## Project structure
 
 ```
 .
-├── server.js          # Express backend: config, CAS files, conversations, streaming proxy
+├── server.js                      # Express backend: config, CAS files, conversations, streaming proxy, ODT export
 ├── package.json
+├── tools/
+│   ├── extract-package.js         # CLI version of the package export (pandoc)
+│   └── reference-liberation.odt   # Pandoc reference doc: fonts, sizes, spacing, HR style
 ├── public/
-│   └── index.html     # Frontend (single file: config panel + chat UI)
-└── data/              # Created automatically
-    ├── config.json            # Model slots, active model, system prompt
-    ├── uploads/               # Content-addressed RAG file pool
-    ├── conversations.json     # Conversations index (ordered by last content change)
-    ├── conversations/<id>/    # Saved conversations (messages + selectedFiles)
-    └── .cas-migrated          # One-time legacy→CAS migration flag
+│   └── index.html                 # Frontend (single file: config panel + chat UI)
+├── moje_dok/                      # Local output (git-ignored)
+│   └── odt/                       # Exported CV / cover letter files + per-conversation manifests
+└── data/                          # Created automatically
+    ├── config.json                # Model slots, active model, system prompt
+    ├── uploads/                   # Content-addressed RAG file pool
+    ├── conversations.json         # Conversations index (ordered by last content change)
+    ├── conversations/<id>/        # Saved conversations (messages + selectedFiles)
+    └── .cas-migrated              # One-time legacy→CAS migration flag
 ```
 
 ## API
@@ -108,6 +134,7 @@ Click **Save configuration** (the button pulses red when there are unsaved chang
 | POST | `/api/conversations` | Create or update a conversation (`id` optional); bumps `updatedAt` only when content changes |
 | POST | `/api/conversations/:id/rename` | Rename a conversation |
 | DELETE | `/api/conversations/:id` | Delete a conversation |
+| POST | `/api/export-package` | Extract CV + cover letters from the latest package in a conversation and convert them to ODT (`{ conversationId }`) |
 
 Chat requests (`preview`, `chat`, `chat/stream`, `context-size`) accept
 `{ messages, modelIndex, selectedFiles, conversationId }` — the RAG file

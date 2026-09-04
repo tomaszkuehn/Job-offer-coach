@@ -4,6 +4,8 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const pdfParse = require('pdf-parse');
+const { execFile } = require('child_process');
+const JSZip = require('jszip');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -454,6 +456,170 @@ app.delete('/api/conversations/:id', (req, res) => {
   const index = loadConversationsIndex().filter((c) => c.id !== id);
   saveConversationsIndex(index);
   res.json({ ok: true });
+});
+
+// ---- Application-package export (CV / Cover Letter -> ODT via pandoc) ----
+app.post('/api/export-package', async (req, res) => {
+  const { conversationId } = req.body || {};
+  if (!conversationId) return res.status(400).json({ error: 'Missing conversationId' });
+
+  const conv = loadConversation(conversationId);
+  if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+
+  // A conversation may hold several CV versions over time (full packages,
+  // updates, standalone CV regenerations). For each part (CV / CL_EN / CL_DE)
+  // export from the LATEST assistant message that contains it.
+  const assistants = conv.messages.filter((m) => m.role === 'assistant');
+  const isCv = (m) => /###\s*4a\./i.test(m.content) || /^#\s+.*KUEHN/m.test(m.content);
+  const isClEn = (m) => /###\s*4b\./i.test(m.content) || (/Cover Letter/i.test(m.content) && /\(English\)/i.test(m.content));
+  const isClDe = (m) => /###\s*4c\./i.test(m.content) || (/Cover Letter/i.test(m.content) && /Deutsch/i.test(m.content));
+  const latest = (pred) => [...assistants].reverse().find(pred);
+
+  const cvMsg = latest(isCv);
+  const clEnMsg = latest(isClEn);
+  const clDeMsg = latest(isClDe);
+  if (!cvMsg && !clEnMsg && !clDeMsg) {
+    return res.status(422).json({ error: 'No application package (CV + Cover Letter) found in this conversation' });
+  }
+
+  // Title from the newest message that has one
+  const titleMsg = [cvMsg, clEnMsg, clDeMsg].filter(Boolean)
+    .find((m) => /^#\s+(?:Pakiet|PAKIET|AKTUALIZACJA)/m.test(m.content) || /^#\s+.*KUEHN/m.test(m.content));
+  const mdOf = (m) => (m ? m.content : '');
+  const titleSrc = mdOf(titleMsg || cvMsg);
+  const title = (titleSrc.match(/^#\s+(?:Pakiet|PAKIET|AKTUALIZACJA)[^\n]*/m)
+    || titleSrc.match(/^#\s+.*KUEHN[^\n]*/m)
+    || ['Application package'])[0].replace(/^#\s+/i, '');
+
+  const pandoc = await new Promise((resolve) => {
+    execFile('pandoc', ['--version'], (err) => resolve(!err));
+  });
+  if (!pandoc) {
+    return res.status(500).json({ error: 'pandoc not found on this system' });
+  }
+
+  // File names start with the conversation name
+  const safeName = String(conv.name || 'conversation')
+    .replace(/[\\/:*?"<>|]+/g, '')
+    .replace(/\s+/g, '_')
+    .slice(0, 60);
+  const outDir = path.join(__dirname, 'moje_dok', 'odt');
+  fs.mkdirSync(outDir, { recursive: true });
+
+  // Cut a subsection (e.g. "### 4a.") from a message, up to the next heading
+  function cutSection(md, startMarker) {
+    const s = md.indexOf(startMarker);
+    if (s === -1) return null;
+    const rest = md.slice(s + startMarker.length);
+    const m = rest.match(/^###|^## /m);
+    return (m ? rest.slice(0, m.index) : rest).trim();
+  }
+
+  // Standalone CV (regenerated outside a package): whole message is the CV,
+  // skip the H1 title line — the document gets the package title anyway.
+  function standaloneCv(md) {
+    if (/^#\s+.*KUEHN/m.test(md)) {
+      return md.replace(/^#.*\n/, '').trim();
+    }
+    return null;
+  }
+
+  // Remove AI-typical em dashes: "word — word" -> "word - word"
+  function stripEmDashes(text) {
+    return text.replace(/—/g, '-').replace(/–/g, '-');
+  }
+
+  const cvFromPkg = cvMsg ? cutSection(mdOf(cvMsg), '### 4a.') : null;
+  const parts = [
+    ['CV', cvFromPkg || (cvMsg ? standaloneCv(mdOf(cvMsg)) : null)],
+    ['CoverLetter_EN', clEnMsg ? cutSection(mdOf(clEnMsg), '### 4b.') : null],
+    ['CoverLetter_DE', clDeMsg ? cutSection(mdOf(clDeMsg), '### 4c.') : null],
+  ];
+
+  // Each generated document gets an incrementing index: _CV_1.odt,
+  // _CoverLetter_EN_2.odt, ... so consecutive exports never overwrite
+  // earlier versions.
+  function nextIndex(kind) {
+    const re = new RegExp(`^${safeName}_${kind}(?:_(\\d+))?\\.odt$`);
+    let max = 0;
+    for (const f of fs.readdirSync(outDir)) {
+      const m = f.match(re);
+      if (m) max = Math.max(max, Number(m[1] || 1));
+    }
+    return max + 1;
+  }
+
+  // Re-exporting the SAME content must not create a new indexed version.
+  // A per-conversation manifest maps each part to the content hash of its
+  // last export; identical content reuses the existing file.
+  const manifestPath = path.join(outDir, safeName + '.manifest.json');
+  let manifest = {};
+  try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch { /* first export */ }
+  const contentHash = (text) => crypto.createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12);
+
+  const exported = [];
+  const tmpFiles = [];
+
+  // Pandoc's ODT writer emits table cells with fo:border="none" — patch
+  // content.xml inside the .odt so tables get visible borders.
+  async function addTableBorders(odtPath) {
+    const zip = await JSZip.loadAsync(fs.readFileSync(odtPath));
+    const content = zip.file('content.xml');
+    if (!content) return;
+    let xml = await content.async('string');
+    const patched = xml.replace(
+      /(<style:style style:name="(?:TableHeaderRowCell|TableRowCell)" style:family="table-cell">\s*<style:table-cell-properties)\s+fo:border="none"\s*\/>/g,
+      '$1 fo:border="0.5pt solid #000000" fo:padding="0.04in" />'
+    );
+    if (patched !== xml) {
+      zip.file('content.xml', patched);
+      // Write in memory and overwrite in place — rename() onto a file that
+      // pandoc just wrote can hit EPERM on Windows (AV scanner lock).
+      const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+      fs.writeFileSync(odtPath, buf);
+    }
+  }
+
+  try {
+    let manifestDirty = false;
+    for (const [kind, content] of parts) {
+      if (!content) continue;
+      const hash = contentHash(stripEmDashes(content));
+      if (manifest[kind] && manifest[kind].hash === hash && fs.existsSync(path.join(outDir, manifest[kind].file))) {
+        // Same content as last export -> reuse the existing file
+        exported.push(manifest[kind].file);
+        continue;
+      }
+      const base = `${safeName}_${kind}_${nextIndex(kind)}`;
+      const mdTmp = path.join(outDir, base + '.md');
+      fs.writeFileSync(mdTmp, `# ${stripEmDashes(title)}\n\n${stripEmDashes(content)}`, 'utf8');
+      tmpFiles.push(mdTmp);
+      const odt = path.join(outDir, base + '.odt');
+      const refDoc = path.join(__dirname, 'tools', 'reference-liberation.odt');
+      const args = [mdTmp, '--from=gfm'];
+      if (fs.existsSync(refDoc)) args.push(`--reference-doc=${refDoc}`);
+      args.push('-o', odt);
+      await new Promise((resolve, reject) => {
+        execFile('pandoc', args, (err) => (err ? reject(err) : resolve()));
+      });
+      await addTableBorders(odt);
+      if (fs.existsSync(odt)) {
+        exported.push(path.basename(odt));
+        manifest[kind] = { hash, file: path.basename(odt) };
+        manifestDirty = true;
+      }
+    }
+    if (manifestDirty) fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  } catch (e) {
+    return res.status(500).json({ error: 'Pandoc conversion failed: ' + e.message });
+  } finally {
+    for (const t of tmpFiles) { try { fs.unlinkSync(t); } catch { /* ignore */ } }
+  }
+
+  if (!exported.length) {
+    return res.status(422).json({ error: 'No CV/CoverLetter sections found in the package' });
+  }
+  res.json({ ok: true, exported, outDir: 'moje_dok/odt' });
 });
 
 // ---- Chat ----
