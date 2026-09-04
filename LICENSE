@@ -1,0 +1,73 @@
+Attribution-Required Non-Commercial No-Derivatives License (AN-NC-ND)
+based on, and inspired by, the Creative Commons BY-NC-ND 4.0 framework
+(https://creativecommons.org/licenses/by-nc-nd/4.0/).
+
+This software/source code is NOT affiliated with or endorsed by
+Creative Commons. CC licenses are designed for creative works, not
+software; this custom notice borrows their well-known terms.
+
+Copyright (c) 2026 Tomasz Kuehn
+
+1. DEFINITIONS
+   - "Software"     : this source code and associated files (server.js,
+                      public/index.html, documentation).
+   - "Author"       : Tomasz Kuehn, the copyright holder above.
+   - "You"          : any individual or entity that uses, copies, or
+                      redistributes the Software.
+   - "Attribution"  : a visible, human-readable credit containing:
+                      the Author's name, the project name
+                      "AI Chat — Job Offers", and the year of copyright.
+
+2. GRANTED RIGHTS
+   Provided you comply with this license, You may:
+   a) Use, run, and execute the Software for non-commercial purposes.
+   b) Copy and redistribute the Software VERBATIM (unmodified) to
+      others, free of charge, with this notice intact.
+
+3. CONDITIONS — ALL OF THE FOLLOWING APPLY
+
+   3.1 ATTRIBUTION IS ALWAYS REQUIRED
+       Any use, display, or redistribution of the Software must be
+       accompanied by clear Attribution. If the Software is part of
+       an application, service, or public repository, the credit must
+       be reasonably visible: in the UI (e.g. an "About" section or
+       footer), in the README, or in the source header — not buried
+       in an obscure legal file only.
+
+   3.2 NO DERIVATIVE WORKS — NO MODIFICATION
+       You may NOT modify, adapt, translate, patch, refactor, or
+       create derivative works of the Software. Redistribution is
+       allowed ONLY in its original, unmodified form. Fixing,
+       extending, or altering the code requires the Author's written
+       permission. Personal local patches for internal use are
+       tolerated but must never be distributed.
+
+   3.3 NON-COMMERCIAL USE ONLY
+       You may NOT use the Software, in whole or in part, for any
+       commercial purpose: selling it, licensing it, offering it as
+       a paid service (SaaS), bundling it with a paid product, or
+       using it internally in any for-profit organization's
+       revenue-generating operations. Commercial use requires a
+       separate written agreement with the Author.
+
+4. OWNERSHIP
+   The Software is licensed, not sold. The Author retains all right,
+   title, and interest in and to the Software and all copies.
+
+5. NO WARRANTY; LIMITATION OF LIABILITY
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+   OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+   NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+   CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+   CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THE SOFTWARE OR ITS USE.
+
+6. TERMINATION
+   Any breach of sections 3.1–3.3 automatically terminates the rights
+   granted herein. Upon termination You must cease use and delete all
+   copies of the Software in Your possession.
+
+7. CONTACT
+   Commercial licensing, modification permissions, and other
+   questions: tomasz.kuehn@gmail.com

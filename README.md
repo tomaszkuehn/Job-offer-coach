@@ -2,6 +2,15 @@
 
 A web application for preparing job offers with the help of an AI model in the cloud (Ollama Cloud). Runs in the browser; the backend is Node.js + Express.
 
+## License
+
+Attribution-Required **Non-Commercial No-Derivatives** (`AN-NC-ND`, custom, CC BY-NC-ND-inspired — see `LICENSE`):
+
+- ✅ Free to **use** and **redistribute verbatim** for non-commercial purposes
+- ✋ **Attribution always required** — visible credit: *Tomasz Kuehn, "AI Chat — Job Offers"*
+- 🚫 **No modifications** — redistribution of the original, unmodified code only
+- 🚫 **No commercial use** — commercial licensing on request: tomasz.kuehn@gmail.com
+
 ## Features
 
 - **Chat with an AI model** — enter a job offer description and get tailored interview prep, positioning advice, and answers grounded in your documents. Context grows with each exchange (full history is sent to the model).

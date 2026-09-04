@@ -4,6 +4,7 @@
   "description": "Chat z modelem AI w chmurze (Ollama) do przygotowywania ofert pracy",
   "main": "server.js",
   "type": "commonjs",
+  "license": "AN-NC-ND",
   "scripts": {
     "start": "node server.js"
   },
