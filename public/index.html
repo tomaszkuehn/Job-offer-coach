@@ -1,0 +1,1210 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Chat — Job Offers</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f4f5f7;
+      color: #1f2933;
+      height: 100vh;
+      display: flex;
+    }
+    .sidebar {
+      width: 340px;
+      background: #fff;
+      border-right: 1px solid #e4e7eb;
+      overflow-y: auto;
+      padding: 20px;
+      flex-shrink: 0;
+    }
+    .sidebar h1 { font-size: 18px; margin-bottom: 4px; }
+    .sidebar .sub { font-size: 12px; color: #7b8794; margin-bottom: 20px; }
+    .section { margin-bottom: 24px; }
+    .section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: #52606d; margin-bottom: 10px; }
+    .section-toggle {
+      display: flex; align-items: center; justify-content: space-between;
+      cursor: pointer; user-select: none; margin-bottom: 10px;
+    }
+    .section-toggle h2 { margin-bottom: 0; }
+    .section-toggle .chevron { font-size: 10px; color: #9aa5b1; }
+    .section-toggle:hover .chevron { color: #52606d; }
+    .section-count { font-weight: 600; color: #9aa5b1; }
+    label { display: block; font-size: 12px; color: #52606d; margin: 8px 0 4px; }
+    input[type=text], input[type=password], textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #cbd2d9;
+      border-radius: 6px;
+      font-size: 13px;
+      font-family: inherit;
+    }
+    textarea { resize: vertical; min-height: 80px; }
+    .btn {
+      display: inline-block;
+      padding: 8px 14px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      background: #2563eb;
+      color: #fff;
+    }
+    .btn:hover { background: #1d4ed8; }
+    .btn.secondary { background: #e4e7eb; color: #1f2933; }
+    .btn.secondary:hover { background: #d3d8de; }
+    .file-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 8px;
+      border: 1px solid #e4e7eb;
+      border-radius: 6px;
+      margin-bottom: 6px;
+      font-size: 12px;
+    }
+    .file-item label { margin: 0; display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; cursor: pointer; }
+    .file-item label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-item .del { background: none; border: none; color: #d64545; cursor: pointer; font-size: 14px; flex-shrink: 0; padding: 0 2px; }
+    .file-item .rename { background: none; border: none; color: #52606d; cursor: pointer; font-size: 13px; flex-shrink: 0; padding: 0 2px; }
+    .file-item .rename:hover { color: #2563eb; }
+    .file-item .del:hover { color: #a12b2b; }
+    .file-item.active {
+      background: #e6f4ea;
+      border-color: #1e7e34;
+    }
+    .file-item.active span { color: #14532d; }
+    .file-item.active .time { color: #4a7c59 !important; }
+    .upload-row { display: flex; gap: 8px; margin-top: 8px; }
+    .upload-row input[type=file] { flex: 1; font-size: 12px; }
+    #saveBtn.dirty {
+      background: #d64545;
+      border-color: #d64545;
+      animation: savePulse 1.2s ease-in-out infinite;
+    }
+    @keyframes savePulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(214, 69, 69, .55); }
+      50% { box-shadow: 0 0 0 9px rgba(214, 69, 69, 0); }
+    }
+    .status { font-size: 12px; color: #7b8794; margin-top: 8px; }
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .msg { max-width: 75%; padding: 12px 16px; border-radius: 12px; font-size: 14px; line-height: 1.5; word-wrap: break-word; overflow-wrap: break-word; }
+    .msg.user, .msg.error { white-space: pre-wrap; }
+    .msg.assistant { align-self: flex-start; background: #fff; border: 1px solid #e4e7eb; }
+    .msg.assistant > .md > *:first-child { margin-top: 0; }
+    .msg.assistant > .md > *:last-child { margin-bottom: 0; }
+    .msg.assistant .md h1, .msg.assistant .md h2, .msg.assistant .md h3, .msg.assistant .md h4 {
+      margin: 14px 0 6px; line-height: 1.3; color: #1f2933;
+    }
+    .msg.assistant .md h1 { font-size: 1.25em; }
+    .msg.assistant .md h2 { font-size: 1.15em; }
+    .msg.assistant .md h3 { font-size: 1.05em; }
+    .msg.assistant .md p { margin: 8px 0; }
+    .msg.assistant .md ul, .msg.assistant .md ol { margin: 8px 0; padding-left: 22px; }
+    .msg.assistant .md li { margin: 3px 0; }
+    .msg.assistant .md code {
+      background: #f1f3f5; border: 1px solid #e4e7eb; border-radius: 4px;
+      padding: 1px 5px; font-size: 12.5px; font-family: Consolas, Menlo, monospace;
+    }
+    .msg.assistant .md pre {
+      background: #1f2933; color: #e4e7eb; border-radius: 8px;
+      padding: 10px 12px; overflow-x: auto; margin: 8px 0;
+    }
+    .msg.assistant .md pre code { background: none; border: none; color: inherit; padding: 0; font-size: 12.5px; }
+    .msg.assistant .md blockquote {
+      margin: 8px 0; padding: 4px 12px; border-left: 3px solid #cbd2d9; color: #52606d;
+    }
+    .msg.assistant .md table { border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+    .msg.assistant .md th, .msg.assistant .md td {
+      border: 1px solid #e4e7eb; padding: 4px 8px; text-align: left;
+    }
+    .msg.assistant .md th { background: #f6f8fa; }
+    .msg.assistant .md a { color: #2563eb; }
+    .msg.assistant .md hr { border: none; border-top: 1px solid #e4e7eb; margin: 10px 0; }
+    .msg.user { align-self: flex-end; background: #2563eb; color: #fff; }
+    .msg.error { align-self: flex-start; background: #fdecea; color: #a12b2b; border: 1px solid #f5c6c6; }
+    .input-bar {
+      display: flex;
+      gap: 10px;
+      padding: 16px 24px;
+      background: #fff;
+      border-top: 1px solid #e4e7eb;
+    }
+    .input-bar textarea {
+      flex: 1;
+      min-height: 44px;
+      max-height: 150px;
+      resize: none;
+    }
+    .input-bar .btn { align-self: flex-end; height: 44px; }
+    .empty { color: #7b8794; text-align: center; margin-top: 40px; font-size: 14px; }
+    .typing { color: #7b8794; font-style: italic; }
+    .overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, .6);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      padding: 20px;
+    }
+    .overlay.show { display: flex; }
+    .overlay-box {
+      background: #fff;
+      border-radius: 12px;
+      width: 100%;
+      max-width: 900px;
+      max-height: 90vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 20px 50px rgba(0,0,0,.3);
+    }
+    .overlay-head {
+      padding: 16px 20px;
+      border-bottom: 1px solid #e4e7eb;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .overlay-head h2 { font-size: 15px; }
+    .overlay-head .meta { font-size: 12px; color: #7b8794; margin-top: 2px; }
+    .overlay-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      font-size: 13px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      background: #fafbfc;
+    }
+    .overlay-body .role-tag {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin-bottom: 6px;
+    }
+    .role-tag.system { background: #e0e7ff; color: #3730a3; }
+    .role-tag.user { background: #dbeafe; color: #1e40af; }
+    .role-tag.assistant { background: #dcfce7; color: #166534; }
+    .overlay-body .msg-block { margin-bottom: 18px; }
+    .overlay-foot {
+      padding: 14px 20px;
+      border-top: 1px solid #e4e7eb;
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+    .btn.danger { background: #d64545; }
+    .btn.danger:hover { background: #a12b2b; }
+    .model-switch {
+      align-self: flex-end;
+      height: 44px;
+      padding: 0 10px;
+      border: 1px solid #cbd2d9;
+      border-radius: 6px;
+      font-size: 13px;
+      background: #fff;
+      max-width: 180px;
+    }
+    .model-slot {
+      border: 1px solid #e4e7eb;
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 10px;
+      background: #fafbfc;
+    }
+    .model-slot.active { border-color: #2563eb; background: #eff6ff; }
+    .model-slot-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      user-select: none;
+    }
+    .model-slot-head .slot-name { font-size: 12px; font-weight: 600; color: #52606d; }
+    .model-slot-head .slot-name .chevron { margin-right: 6px; font-size: 10px; color: #9aa5b1; }
+    .model-slot-head .slot-name .active-tag { margin-left: 6px; font-size: 10px; color: #2563eb; font-weight: 600; }
+    .slot-body { margin-top: 10px; }
+    .slot-body label { display: block; margin-top: 8px; }
+    .model-slot-head .slot-actions { display: flex; gap: 6px; }
+    .model-slot-head .slot-actions button {
+      background: none; border: none; cursor: pointer; font-size: 13px; color: #52606d;
+    }
+    .model-slot-head .slot-actions button:hover { color: #1f2933; }
+    .model-slot-head .slot-actions .del:hover { color: #d64545; }
+    .model-slot .slot-radio {
+      display: flex; align-items: center; gap: 6px; font-size: 12px; color: #2563eb; cursor: pointer;
+    }
+    .model-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: #e0e7ff;
+      color: #3730a3;
+      margin-bottom: 6px;
+    }
+    .ctx-size {
+      font-size: 13px;
+      font-weight: 700;
+      white-space: nowrap;
+      align-self: center;
+      padding: 4px 10px;
+      border-radius: 12px;
+      background: #e6f4ea;
+      color: #1e7e34;
+      border: 1px solid #b7dfc0;
+    }
+    .ctx-size.warn { background: #fef3e2; color: #b25e09; border-color: #f3d0a4; }
+    .ctx-size.danger { background: #fdecea; color: #a12b2b; border-color: #f5c6c6; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <h1>AI Chat — Job Offers</h1>
+    <div class="sub">Prepare job offers with the help of an AI model</div>
+
+    <div class="section">
+      <h2>Conversations</h2>
+      <div id="convList"></div>
+      <button class="btn secondary" id="newConvBtn" style="width:100%; margin-top:8px">+ New conversation</button>
+    </div>
+
+    <div class="section">
+      <h2>Model configuration</h2>
+      <div id="modelSlots"></div>
+      <div class="upload-row" style="margin-top:8px">
+        <button class="btn secondary" id="fetchModelsBtn" style="flex:1">Fetch models</button>
+        <button class="btn secondary" id="addModelBtn">+ Add</button>
+      </div>
+      <div id="modelPickerWrap" style="display:none; margin-top:8px"></div>
+      <div class="status" id="modelStatus"></div>
+    </div>
+
+    <div class="section">
+      <h2>Expected response (prompt)</h2>
+      <textarea id="systemPrompt" placeholder="E.g. You are an HR expert. Prepare a professional job offer based on the description. Use a clear structure: position, responsibilities, requirements, we offer."></textarea>
+    </div>
+
+    <div class="section">
+      <div class="section-toggle" id="filesToggle">
+        <h2>Files (RAG) <span class="section-count" id="filesCount"></span></h2>
+        <span class="chevron" id="filesChevron">▶</span>
+      </div>
+      <div id="filesBody" style="display:none">
+        <div id="fileList"></div>
+        <div class="upload-row">
+          <input type="file" id="fileInput" multiple />
+          <button class="btn secondary" id="uploadBtn">Add</button>
+        </div>
+        <div class="status" id="fileStatus"></div>
+      </div>
+    </div>
+
+    <button class="btn" id="saveBtn" style="width:100%">Save configuration</button>
+    <div class="status" id="saveStatus"></div>
+  </aside>
+
+  <main class="main">
+    <div class="chat" id="chat">
+      <div class="empty">Enter a job offer description below to get started.</div>
+    </div>
+    <div class="input-bar">
+      <select id="modelSwitcher" class="model-switch" title="Active model"></select>
+      <span id="ctxSize" class="ctx-size" title="Estimated context size (system prompt + RAG files + conversation)">ctx: –</span>
+      <textarea id="userInput" placeholder="Describe the job offer..."></textarea>
+      <button class="btn" id="sendBtn">Send</button>
+    </div>
+  </main>
+
+  <div class="overlay" id="nameOverlay">
+    <div class="overlay-box" style="max-width:420px">
+      <div class="overlay-head">
+        <div><h2>Start a new conversation?</h2></div>
+        <button class="btn secondary" id="nameClose">✕</button>
+      </div>
+      <div class="overlay-body" style="white-space:normal">
+        <label>Do you want to give name to current conversation?</label>
+        <input type="text" id="convNameInput" placeholder="e.g. Offer — Senior Developer" />
+      </div>
+      <div class="overlay-foot">
+        <button class="btn secondary" id="nameCancel">Cancel</button>
+        <button class="btn" id="nameConfirm">Save and start new</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay" id="overlay">
+    <div class="overlay-box">
+      <div class="overlay-head">
+        <div>
+          <h2>Preview of content to send</h2>
+          <div class="meta" id="overlayMeta"></div>
+        </div>
+        <button class="btn secondary" id="overlayClose">✕</button>
+      </div>
+      <div class="overlay-body" id="overlayBody"></div>
+      <div class="overlay-foot">
+        <button class="btn secondary" id="overlayCancel">Cancel</button>
+        <button class="btn" id="overlaySend">Send to model</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const chatEl = document.getElementById('chat');
+    const userInput = document.getElementById('userInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const fileListEl = document.getElementById('fileList');
+    const fileInput = document.getElementById('fileInput');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const fileStatus = document.getElementById('fileStatus');
+    const saveStatus = document.getElementById('saveStatus');
+    const overlay = document.getElementById('overlay');
+    const overlayBody = document.getElementById('overlayBody');
+    const overlayMeta = document.getElementById('overlayMeta');
+    const convListEl = document.getElementById('convList');
+    const nameOverlay = document.getElementById('nameOverlay');
+    const convNameInput = document.getElementById('convNameInput');
+    const modelSlotsEl = document.getElementById('modelSlots');
+    const modelStatus = document.getElementById('modelStatus');
+    const modelSwitcher = document.getElementById('modelSwitcher');
+
+    let pendingSend = null;
+    let currentConvId = null;
+    let currentConvName = null;
+    let currentConvModelIndex = null;
+
+    let messages = [];
+    let allFiles = [];
+    let models = [];
+    let activeModel = 0;
+
+    // ---- Unsaved-changes (dirty state) tracking ----
+    const saveBtnEl = document.getElementById('saveBtn');
+    let suppressDirty = false;
+    let lastSavedSnapshot = '';
+
+    function configSnapshot() {
+      return JSON.stringify({
+        models,
+        activeModel,
+        systemPrompt: document.getElementById('systemPrompt').value
+      });
+    }
+    function markDirty() {
+      if (suppressDirty) return;
+      const dirty = configSnapshot() !== lastSavedSnapshot;
+      saveBtnEl.classList.toggle('dirty', dirty);
+    }
+    function markSaved() {
+      lastSavedSnapshot = configSnapshot();
+      saveBtnEl.classList.remove('dirty');
+    }
+    // Any user edit inside the sidebar triggers a dirty check
+    document.querySelector('.sidebar').addEventListener('input', markDirty);
+    document.querySelector('.sidebar').addEventListener('change', markDirty);
+
+    function mdToHtml(text) {
+      if (typeof marked !== 'undefined') {
+        try { return marked.parse(text); } catch (e) { /* fallback below */ }
+      }
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function addMsg(role, content, model) {
+      const empty = chatEl.querySelector('.empty');
+      if (empty) empty.remove();
+      const div = document.createElement('div');
+      div.className = 'msg ' + role;
+      if (role === 'assistant' && model) {
+        const badge = document.createElement('div');
+        badge.className = 'model-badge';
+        badge.textContent = model;
+        div.appendChild(badge);
+      }
+      if (role === 'assistant' && typeof marked !== 'undefined') {
+        const md = document.createElement('div');
+        md.className = 'md';
+        md.innerHTML = mdToHtml(content);
+        div.appendChild(md);
+      } else {
+        div.textContent = content;
+      }
+      chatEl.appendChild(div);
+      chatEl.scrollTop = chatEl.scrollHeight;
+    }
+
+    function cleanFileName(name) {
+      // Strip CAS hash prefix (8 hex chars + underscore) or legacy upload timestamp prefix
+      return name.replace(/^([a-f0-9]{8}|\d{10,})_/, '');
+    }
+
+    function renderFiles() {
+      fileListEl.innerHTML = '';
+      // RAG list shows THIS conversation's attached files only
+      (selectedFiles || []).forEach((name) => {
+        const meta = allFiles.find((f) => f.name === name) || { name, size: 0 };
+        const item = document.createElement('div');
+        item.className = 'file-item';
+        const label = document.createElement('label');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = true;
+        cb.addEventListener('change', () => {
+          if (!cb.checked) {
+            selectedFiles = selectedFiles.filter((n) => n !== name);
+            renderFiles();
+            scheduleCtxUpdate();
+          }
+        });
+        const span = document.createElement('span');
+        span.textContent = cleanFileName(name);
+        label.appendChild(cb);
+        label.appendChild(span);
+        const del = document.createElement('button');
+        del.className = 'del';
+        del.textContent = '✕';
+        del.title = 'Detach file from this conversation';
+        del.addEventListener('click', () => {
+          selectedFiles = selectedFiles.filter((n) => n !== name);
+          renderFiles();
+          scheduleCtxUpdate();
+        });
+        item.appendChild(label);
+        item.appendChild(del);
+        fileListEl.appendChild(item);
+      });
+      updateFilesCount();
+    }
+
+    function updateFilesCount() {
+      const total = (selectedFiles || []).length;
+      document.getElementById('filesCount').textContent = total
+        ? `(${total} attached)`
+        : '(empty)';
+    }
+
+    let ctxTimer = null;
+    async function updateCtxSize() {
+      const el = document.getElementById('ctxSize');
+      try {
+        const res = await fetch('/api/context-size', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(aiRequestBody(messages, activeModel))
+        });
+        const data = await res.json();
+        if (res.ok) {
+          const kb = data.chars / 1024;
+          el.textContent = 'ctx: ' + (kb >= 100 ? Math.round(kb) : kb.toFixed(1)) + ' kB';
+          el.title = 'Estimated context: ' + data.chars + ' chars ≈ ' + data.tokens + ' tokens (system prompt + RAG files + conversation)';
+          el.classList.toggle('warn', data.tokens >= 30000 && data.tokens < 60000);
+          el.classList.toggle('danger', data.tokens >= 60000);
+        }
+      } catch (_) { /* ignore */ }
+    }
+    function scheduleCtxUpdate() {
+      if (ctxTimer) clearTimeout(ctxTimer);
+      ctxTimer = setTimeout(updateCtxSize, 300);
+    }
+
+    let filesOpen = false;
+    document.getElementById('filesToggle').addEventListener('click', () => {
+      filesOpen = !filesOpen;
+      document.getElementById('filesBody').style.display = filesOpen ? 'block' : 'none';
+      document.getElementById('filesChevron').textContent = filesOpen ? '▼' : '▶';
+    });
+
+    let selectedFiles = [];
+
+    let expandedSlot = null;
+
+    function renderModelSlots() {
+      modelSlotsEl.innerHTML = '';
+      if (!models.length) {
+        const d = document.createElement('div');
+        d.className = 'status';
+        d.textContent = 'No models configured. Add one below.';
+        modelSlotsEl.appendChild(d);
+        return;
+      }
+      if (expandedSlot !== null && (expandedSlot >= models.length || expandedSlot < 0)) expandedSlot = null;
+      models.forEach((m, i) => {
+        const slot = document.createElement('div');
+        slot.className = 'model-slot' + (i === activeModel ? ' active' : '');
+        const head = document.createElement('div');
+        head.className = 'model-slot-head';
+        const name = document.createElement('span');
+        name.className = 'slot-name';
+        name.textContent = m.name || ('Model ' + (i + 1));
+        const actions = document.createElement('div');
+        actions.className = 'slot-actions';
+        const up = document.createElement('button');
+        up.textContent = '↑';
+        up.title = 'Move up';
+        up.addEventListener('click', () => {
+          if (i === 0) return;
+          [models[i - 1], models[i]] = [models[i], models[i - 1]];
+          if (activeModel === i) activeModel = i - 1;
+          else if (activeModel === i - 1) activeModel = i;
+          renderModelSlots();
+          renderModelSwitcher();
+        });
+        const down = document.createElement('button');
+        down.textContent = '↓';
+        down.title = 'Move down';
+        down.addEventListener('click', () => {
+          if (i === models.length - 1) return;
+          [models[i + 1], models[i]] = [models[i], models[i + 1]];
+          if (activeModel === i) activeModel = i + 1;
+          else if (activeModel === i + 1) activeModel = i;
+          renderModelSlots();
+          renderModelSwitcher();
+        });
+        const del = document.createElement('button');
+        del.className = 'del';
+        del.textContent = '✕';
+        del.title = 'Remove model';
+        del.addEventListener('click', () => {
+          models.splice(i, 1);
+          if (activeModel >= models.length) activeModel = models.length - 1;
+          if (activeModel < 0) activeModel = 0;
+          renderModelSlots();
+          renderModelSwitcher();
+        });
+        actions.appendChild(up);
+        actions.appendChild(down);
+        actions.appendChild(del);
+        head.appendChild(name);
+        head.appendChild(actions);
+        slot.appendChild(head);
+
+        // Accordion: clicking the header toggles this slot; only one open at a time
+        const isOpen = (expandedSlot === i);
+        name.textContent = '';
+        const chev = document.createElement('span');
+        chev.className = 'chevron';
+        chev.textContent = isOpen ? '▼' : '▶';
+        name.appendChild(chev);
+        name.appendChild(document.createTextNode(m.name || ('Model ' + (i + 1))));
+        if (i === activeModel) {
+          const tag = document.createElement('span');
+          tag.className = 'active-tag';
+          tag.textContent = '●';
+          tag.title = 'Active model';
+          name.appendChild(tag);
+        }
+
+        const body = document.createElement('div');
+        body.className = 'slot-body';
+        if (!isOpen) body.style.display = 'none';
+
+        const mkInput = (labelText, key, placeholder, type) => {
+          const lab = document.createElement('label');
+          lab.textContent = labelText;
+          const inp = document.createElement('input');
+          inp.type = type || 'text';
+          inp.placeholder = placeholder;
+          inp.value = m[key] || '';
+          inp.addEventListener('input', () => { m[key] = inp.value; });
+          body.appendChild(lab);
+          body.appendChild(inp);
+        };
+        mkInput('Name', 'name', 'e.g. Fast model', 'text');
+        mkInput('Endpoint', 'endpoint', 'https://ollama.com/api/chat', 'text');
+        mkInput('API key', 'apiKey', 'sk-...', 'password');
+        mkInput('Model', 'model', 'gpt-oss:20b-cloud', 'text');
+        slot.appendChild(body);
+
+        const setActiveBtn = document.createElement('button');
+        setActiveBtn.className = 'btn secondary';
+        setActiveBtn.style.cssText = 'width:100%; margin-top:10px';
+        setActiveBtn.textContent = i === activeModel ? 'Active model ✓' : 'Set as active';
+        setActiveBtn.addEventListener('click', () => {
+          activeModel = i;
+          renderModelSlots();
+          renderModelSwitcher();
+        });
+        body.appendChild(setActiveBtn);
+
+        // Header click toggles accordion (ignore clicks on action buttons)
+        head.addEventListener('click', (e) => {
+          if (e.target.closest('.slot-actions')) return;
+          expandedSlot = (expandedSlot === i) ? null : i;
+          renderModelSlots();
+        });
+
+        modelSlotsEl.appendChild(slot);
+      });
+    }
+
+    function renderModelSwitcher() {
+      modelSwitcher.innerHTML = '';
+      models.forEach((m, i) => {
+        const opt = document.createElement('option');
+        opt.value = i;
+        opt.textContent = m.name || m.model || ('Model ' + (i + 1));
+        opt.selected = (i === activeModel);
+        modelSwitcher.appendChild(opt);
+      });
+      modelSwitcher.disabled = models.length === 0;
+    }
+
+    function showModelPicker(modelList) {
+      const wrap = document.getElementById('modelPickerWrap');
+      wrap.style.display = 'block';
+      wrap.innerHTML = '';
+      const lab = document.createElement('label');
+      lab.textContent = 'Select model to set for active slot:';
+      const sel = document.createElement('select');
+      sel.className = 'model-switch';
+      sel.style.width = '100%';
+      sel.style.height = '34px';
+      const place = document.createElement('option');
+      place.value = '';
+      place.textContent = '-- choose model --';
+      sel.appendChild(place);
+      modelList.forEach((id) => {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = id;
+        sel.appendChild(opt);
+      });
+      const btn = document.createElement('button');
+      btn.className = 'btn';
+      btn.style.width = '100%';
+      btn.style.marginTop = '6px';
+      btn.textContent = 'Set model';
+      btn.addEventListener('click', () => {
+        if (!sel.value) return;
+        const m = models[activeModel] || models[0];
+        if (m) {
+          m.model = sel.value;
+          renderModelSlots();
+          renderModelSwitcher();
+          modelStatus.textContent = 'Model set: ' + sel.value;
+          setTimeout(() => (modelStatus.textContent = ''), 2500);
+        }
+        wrap.style.display = 'none';
+      });
+      wrap.appendChild(lab);
+      wrap.appendChild(sel);
+      wrap.appendChild(btn);
+    }
+
+    async function fetchModels() {
+      modelStatus.textContent = 'Fetching...';
+      try {
+        const res = await fetch('/api/models');
+        const data = await res.json();
+        if (!res.ok) {
+          modelStatus.textContent = data.error || 'Error fetching models';
+          return;
+        }
+        if (!data.models || !data.models.length) {
+          modelStatus.textContent = 'No models returned.';
+          return;
+        }
+        showModelPicker(data.models);
+        modelStatus.textContent = 'Fetched ' + data.models.length + ' model(s).';
+        setTimeout(() => (modelStatus.textContent = ''), 2500);
+      } catch (e) {
+        modelStatus.textContent = 'Error fetching models: ' + e.message;
+      }
+    }
+
+    document.getElementById('fetchModelsBtn').addEventListener('click', fetchModels);
+    document.getElementById('addModelBtn').addEventListener('click', () => {
+      models.push({ name: 'Model ' + (models.length + 1), endpoint: 'https://ollama.com/api/chat', apiKey: '', model: '' });
+      renderModelSlots();
+      renderModelSwitcher();
+    });
+    modelSwitcher.addEventListener('change', (e) => {
+      activeModel = parseInt(e.target.value, 10);
+      renderModelSlots();
+      scheduleCtxUpdate();
+    });
+
+    function renderConversations(list) {
+      convListEl.innerHTML = '';
+      if (!list.length) {
+        const d = document.createElement('div');
+        d.className = 'status';
+        d.textContent = 'No saved conversations';
+        convListEl.appendChild(d);
+        return;
+      }
+      list.forEach((c) => {
+        const item = document.createElement('div');
+        item.className = 'file-item' + (c.id === currentConvId ? ' active' : '');
+        const label = document.createElement('label');
+        label.style.cursor = 'pointer';
+        const wrap = document.createElement('span');
+        wrap.style.cssText = 'min-width:0; flex:1';
+        const span = document.createElement('span');
+        span.textContent = c.name;
+        span.style.cssText = 'display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap';
+        const time = document.createElement('span');
+        time.className = 'time';
+        time.style.cssText = 'display:block; font-size:10px; color:#9aa5b1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap';
+        time.textContent = formatConvTime(c.updatedAt || c.createdAt);
+        wrap.appendChild(span);
+        wrap.appendChild(time);
+        label.appendChild(wrap);
+        label.addEventListener('click', () => loadConversation(c.id));
+        const rename = document.createElement('button');
+        rename.className = 'rename';
+        rename.textContent = '✎';
+        rename.title = 'Rename conversation';
+        rename.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const newName = prompt('New name:', c.name);
+          if (newName === null) return;
+          const trimmed = newName.trim();
+          if (!trimmed || trimmed === c.name) return;
+          const res = await fetch('/api/conversations/' + c.id + '/rename', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: trimmed })
+          });
+          if (res.ok) {
+            if (currentConvId === c.id) currentConvName = trimmed;
+            await loadConversations();
+          }
+        });
+        const del = document.createElement('button');
+        del.className = 'del';
+        del.textContent = '✕';
+        del.title = 'Delete conversation';
+        del.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          if (!confirm('Delete conversation "' + c.name + '"?')) return;
+          await fetch('/api/conversations/' + c.id, { method: 'DELETE' });
+          if (currentConvId === c.id) {
+            currentConvId = null;
+            currentConvName = null;
+            messages = [];
+            renderChat();
+          }
+          await loadConversations();
+        });
+        item.appendChild(label);
+        item.appendChild(rename);
+        item.appendChild(del);
+        convListEl.appendChild(item);
+      });
+    }
+
+    function formatConvTime(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d)) return '';
+      const now = new Date();
+      const sameDay = d.toDateString() === now.toDateString();
+      if (sameDay) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return d.toLocaleString([], {
+        day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+      });
+    }
+
+    async function loadConversations() {
+      const res = await fetch('/api/conversations');
+      const list = await res.json();
+      renderConversations(list);
+    }
+
+    function renderChat() {
+      chatEl.innerHTML = '';
+      if (!messages.length) {
+        const d = document.createElement('div');
+        d.className = 'empty';
+        d.textContent = 'Enter a job offer description below to get started.';
+        chatEl.appendChild(d);
+      } else {
+        messages.forEach((m) => {
+          const div = document.createElement('div');
+          div.className = 'msg ' + m.role;
+          if (m.role === 'assistant' && m.model) {
+            const badge = document.createElement('div');
+            badge.className = 'model-badge';
+            badge.textContent = m.model;
+            div.appendChild(badge);
+          }
+          if (m.role === 'assistant' && typeof marked !== 'undefined') {
+            const md = document.createElement('div');
+            md.className = 'md';
+            md.innerHTML = mdToHtml(m.content);
+            div.appendChild(md);
+          } else {
+            div.textContent = m.content;
+          }
+          chatEl.appendChild(div);
+        });
+        chatEl.scrollTop = chatEl.scrollHeight;
+      }
+    }
+
+    async function loadConversation(id) {
+      const res = await fetch('/api/conversations/' + id);
+      if (!res.ok) return;
+      const conv = await res.json();
+      currentConvId = conv.id;
+      currentConvName = conv.name;
+      currentConvModelIndex = (conv.modelIndex !== undefined && conv.modelIndex !== null) ? conv.modelIndex : null;
+      messages = conv.messages || [];
+      selectedFiles = conv.selectedFiles || [];
+      renderChat();
+      renderFiles();
+      scheduleCtxUpdate();
+      // Re-render the list so the green highlight follows the browsed conversation
+      await loadConversations();
+      await loadConfig();
+      if (currentConvModelIndex !== null && currentConvModelIndex < models.length) {
+        activeModel = currentConvModelIndex;
+        renderModelSlots();
+        renderModelSwitcher();
+        scheduleCtxUpdate();
+      }
+    }
+
+    function showNameOverlay() {
+      convNameInput.value = currentConvName || '';
+      nameOverlay.classList.add('show');
+      setTimeout(() => { convNameInput.focus(); convNameInput.select(); }, 50);
+    }
+    function hideNameOverlay() {
+      nameOverlay.classList.remove('show');
+    }
+
+    async function saveConversation() {
+      if (!messages.length) return null;
+      const body = {
+        id: currentConvId || undefined,
+        name: currentConvName || 'Conversation ' + new Date().toLocaleString(),
+        messages,
+        selectedFiles,
+        modelIndex: activeModel
+      };
+      try {
+        const res = await fetch('/api/conversations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (res.ok && data.id) {
+          const isNew = !currentConvId;
+          currentConvId = data.id;
+          // Re-render list ONLY when something actually changed (new conversation
+          // or content update) — browsing archives must not reorder the list.
+          if (isNew || data.updated) await loadConversations();
+          else renderConversations(await (await fetch('/api/conversations')).json());
+          return { id: data.id, isNew };
+        }
+      } catch (e) {
+        console.error('Save failed', e);
+      }
+      return null;
+    }
+
+    function aiRequestBody(messages, modelIndex) {
+      return {
+        messages,
+        modelIndex,
+        selectedFiles: selectedFiles.slice(),
+        conversationId: currentConvId
+      };
+    }
+
+    async function startNewConversation() {
+      const name = convNameInput.value.trim();
+      hideNameOverlay();
+
+      if (messages.length) {
+        // Apply the typed name to the CURRENT conversation (empty = keep existing) and flush it
+        if (name) currentConvName = name;
+        await saveConversation();
+      }
+      // Start fresh — KEEP the RAG selection and model from the previous
+      // conversation (typical next step: same docs, new offer).
+      // The new conversation always gets a DEFAULT name with current timestamp
+      // (a typed name belongs to the conversation being flushed, not this one).
+      currentConvId = null;
+      currentConvName = null;
+      currentConvModelIndex = null;
+      messages = [];
+      renderChat();
+      renderFiles();
+      scheduleCtxUpdate();
+      await loadConversations();
+    }
+
+    document.getElementById('newConvBtn').addEventListener('click', showNameOverlay);
+    document.getElementById('nameClose').addEventListener('click', hideNameOverlay);
+    document.getElementById('nameCancel').addEventListener('click', hideNameOverlay);
+    document.getElementById('nameConfirm').addEventListener('click', startNewConversation);
+    nameOverlay.addEventListener('click', (e) => {
+      if (e.target === nameOverlay) hideNameOverlay();
+    });
+    convNameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') startNewConversation();
+    });
+
+    async function loadConfig() {
+      const res = await fetch('/api/config');
+      const cfg = await res.json();
+      models = cfg.models && cfg.models.length ? cfg.models : [];
+      activeModel = (cfg.activeModel !== undefined && cfg.activeModel < models.length) ? cfg.activeModel : 0;
+      document.getElementById('systemPrompt').value = cfg.systemPrompt || '';
+      // selectedFiles is per-conversation state — loadConfig no longer resets it
+      allFiles = cfg.files || [];
+      renderModelSlots();
+      renderModelSwitcher();
+      renderFiles();
+      markSaved();
+    }
+
+    async function saveConfig() {
+      const body = {
+        models,
+        activeModel,
+        systemPrompt: document.getElementById('systemPrompt').value
+      };
+      try {
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        saveStatus.textContent = 'Saved ✓';
+        setTimeout(() => (saveStatus.textContent = ''), 2000);
+        lastSavedSnapshot = JSON.stringify(body);
+        saveBtnEl.classList.remove('dirty');
+      } catch (e) {
+        saveStatus.textContent = 'Save failed: ' + e.message;
+        saveBtnEl.classList.add('dirty');
+      }
+    }
+
+    uploadBtn.addEventListener('click', async () => {
+      if (!fileInput.files.length) return;
+      const fd = new FormData();
+      for (const f of fileInput.files) fd.append('files', f);
+      fileStatus.textContent = 'Uploading...';
+      const res = await fetch('/api/files', { method: 'POST', body: fd });
+      const data = await res.json();
+      const parts = [];
+      if (data.files.length) parts.push('Added ' + data.files.length + ' file(s)');
+      if (data.reused && data.reused.length) {
+        parts.push('Reused existing: ' + data.reused.map((d) => cleanFileName(d.name)).join(', '));
+      }
+      fileStatus.textContent = parts.join(' • ') || 'Nothing added';
+      fileStatus.style.color = (data.reused && data.reused.length) ? '#1e7e34' : '';
+      fileInput.value = '';
+      // Uploaded (new or reused) files attach to the CURRENT conversation
+      data.files.concat(data.reused || []).forEach((f) => {
+        const meta = { name: f.name, size: f.size };
+        if (!allFiles.some((x) => x.name === f.name)) allFiles.push(meta);
+        if (!selectedFiles.includes(f.name)) selectedFiles.push(f.name);
+      });
+      renderFiles();
+      scheduleCtxUpdate();
+      if (messages.length) await saveConversation();
+      setTimeout(() => { fileStatus.textContent = ''; fileStatus.style.color = ''; }, 4000);
+    });
+
+    document.getElementById('saveBtn').addEventListener('click', saveConfig);
+
+    function showOverlay() {
+      overlay.classList.add('show');
+    }
+    function hideOverlay() {
+      overlay.classList.remove('show');
+      pendingSend = null;
+    }
+
+    function renderPreview(data) {
+      overlayMeta.textContent = `Model: ${data.model}  •  Endpoint: ${data.endpoint}`;
+      overlayBody.innerHTML = '';
+      data.payload.messages.forEach((m) => {
+        const block = document.createElement('div');
+        block.className = 'msg-block';
+        const tag = document.createElement('span');
+        tag.className = 'role-tag ' + m.role;
+        tag.textContent = m.role;
+        const pre = document.createElement('div');
+        pre.textContent = m.content;
+        block.appendChild(tag);
+        block.appendChild(pre);
+        overlayBody.appendChild(block);
+      });
+      overlayBody.scrollTop = 0;
+    }
+
+    async function send() {
+      const text = userInput.value.trim();
+      if (!text) return;
+      addMsg('user', text);
+      messages.push({ role: 'user', content: text });
+      userInput.value = '';
+      sendBtn.disabled = true;
+
+      // New session appears on the list immediately after the first message
+      if (!currentConvId) {
+        currentConvName = currentConvName || ('Conversation ' + new Date().toLocaleString());
+        await saveConversation();
+      }
+
+      try {
+        const res = await fetch('/api/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(aiRequestBody(messages, activeModel))
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          addMsg('error', data.error || 'Preview error');
+          sendBtn.disabled = false;
+          return;
+        }
+        renderPreview(data);
+        pendingSend = { messages: messages.slice(), modelIndex: activeModel };
+        showOverlay();
+      } catch (e) {
+        addMsg('error', 'Preview error: ' + e.message);
+        sendBtn.disabled = false;
+      }
+    }
+
+    async function doSend() {
+      const msgs = pendingSend.messages;
+      const modelIndex = pendingSend.modelIndex;
+      hideOverlay();
+      sendBtn.disabled = true;
+
+      const wrap = document.createElement('div');
+      wrap.className = 'msg assistant';
+      const badge = document.createElement('div');
+      badge.className = 'model-badge';
+      badge.textContent = '...';
+      wrap.appendChild(badge);
+      const md = document.createElement('div');
+      md.className = 'md';
+      md.textContent = '';
+      wrap.appendChild(md);
+      chatEl.appendChild(wrap);
+      chatEl.scrollTop = chatEl.scrollHeight;
+
+      let full = '';
+      let streamModel = null;
+      let renderTimer = null;
+      const flush = () => {
+        md.innerHTML = mdToHtml(full || '...');
+        chatEl.scrollTop = chatEl.scrollHeight;
+      };
+      const scheduleRender = () => {
+        if (renderTimer) return;
+        renderTimer = setTimeout(() => { renderTimer = null; flush(); }, 100);
+      };
+
+      try {
+        const res = await fetch('/api/chat/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(aiRequestBody(msgs, modelIndex))
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          wrap.remove();
+          addMsg('error', errData.error || 'Error');
+        } else {
+          streamModel = res.headers.get('X-Model') || null;
+          badge.textContent = streamModel || '...';
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            full += decoder.decode(value, { stream: true });
+            scheduleRender();
+          }
+          if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+          const errIdx = full.indexOf('\n[ERROR]');
+          let errPart = null;
+          if (errIdx !== -1) {
+            errPart = full.slice(errIdx + 8).trim();
+            full = full.slice(0, errIdx);
+          }
+          if (full.trim() === '' && errPart) {
+            wrap.remove();
+            addMsg('error', errPart);
+          } else {
+            flush();
+            if (!full.trim()) full = '(empty response)';
+            messages.push({ role: 'assistant', content: full, model: streamModel });
+            badge.textContent = streamModel || '';
+            scheduleCtxUpdate();
+            await saveConversation();
+          }
+        }
+      } catch (e) {
+        wrap.remove();
+        addMsg('error', 'Connection error: ' + e.message);
+      }
+      sendBtn.disabled = false;
+    }
+
+    document.getElementById('overlayClose').addEventListener('click', hideOverlay);
+    document.getElementById('overlayCancel').addEventListener('click', hideOverlay);
+    document.getElementById('overlaySend').addEventListener('click', doSend);
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) hideOverlay();
+    });
+
+    sendBtn.addEventListener('click', send);
+    userInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        send();
+      }
+    });
+
+    loadConfig();
+    loadConversations();
+    scheduleCtxUpdate();
+    renderFiles();
+  </script>
+</body>
+</html>

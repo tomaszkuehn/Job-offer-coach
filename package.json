@@ -1,0 +1,15 @@
+{
+  "name": "job-offer-ai-chat",
+  "version": "1.0.0",
+  "description": "Chat z modelem AI w chmurze (Ollama) do przygotowywania ofert pracy",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "multer": "^2.3.0",
+    "pdf-parse": "^1.1.1"
+  }
+}
