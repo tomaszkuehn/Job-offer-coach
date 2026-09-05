@@ -368,6 +368,40 @@ app.get('/api/conversations', (req, res) => {
   res.json(loadConversationsIndex());
 });
 
+// Search conversations by title or message content. Returns index entries
+// extended with a match type and a short snippet for body matches.
+app.get('/api/conversations/search', (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (!q) return res.json([]);
+  const ql = q.toLowerCase();
+  const results = [];
+  const index = loadConversationsIndex();
+  for (const entry of loadConversationsIndex()) {
+    const conv = loadConversation(entry.id);
+    if (!conv) continue;
+
+    // Title match
+    if (String(conv.name || '').toLowerCase().includes(ql)) {
+      results.push({ ...entry, matchType: 'title', snippet: null });
+      continue;
+    }
+
+    // Body match: first message containing the query (assistant first — the
+    // useful documents usually live there)
+    let snippet = null;
+    for (let i = conv.messages.length - 1; i >= 0; i--) {
+      const m = conv.messages[i];
+      const idx = String(m.content || '').toLowerCase().indexOf(ql);
+      if (idx === -1) continue;
+      const from = Math.max(0, idx - 60);
+      snippet = (from > 0 ? '…' : '') + m.content.slice(from, idx + q.length + 60).replace(/\s+/g, ' ') + '…';
+      break;
+    }
+    if (snippet) results.push({ ...entry, matchType: 'body', snippet });
+  }
+  res.json(results);
+});
+
 app.get('/api/conversations/:id', (req, res) => {
   const conv = loadConversation(req.params.id);
   if (!conv) return res.status(404).json({ error: 'Conversation not found' });
@@ -497,7 +531,9 @@ app.post('/api/export-package', async (req, res) => {
 
   // Split a message into "## ..." / "### ..." sections: { heading, body }.
   // Models use either level for document sections (e.g. "### 4a." in a full
-  // package vs "## CV" in an update message), so parse both.
+  // package vs "## CV" in an update message), so parse both. A section body
+  // ends at the next heading of the SAME or HIGHER level (H3 subsections
+  // belong to their H2 parent).
   function docSections(md) {
     const out = [];
     const re = /^(#{2,4})\s+([^\n]*)/gm;
@@ -506,7 +542,7 @@ app.post('/api/export-package', async (req, res) => {
       const level = m[1].length;
       const start = m.index + m[0].length;
       const rest = md.slice(start);
-      const next = rest.search(new RegExp(`^#{${level},${4}}\\s`, 'm'));
+      const next = rest.search(new RegExp(`^#{1,${level}}\\s`, 'm'));
       const body = (next === -1 ? rest : rest.slice(0, next)).trim();
       out.push({ heading: m[2].trim(), body });
     }
@@ -527,7 +563,8 @@ app.post('/api/export-package', async (req, res) => {
   }
 
   const msgHasCv = (m) => docSections(m.content).some((s) => isCvHeading(s.heading))
-    || /^#\s+.*Kuehn/i.test(unwrapCodeFence(m.content));
+    || docSections(m.content).some((s) => /\bCV\b/i.test(s.heading)) // combined "4. CV ... i Cover Letter" sections
+    || /^#[^\n]*Kuehn/im.test(unwrapCodeFence(m.content));
   const msgHasClEn = (m) => docSections(m.content).some((s) => isClHeading(s.heading) && clIsEn(s.heading))
     || (/Cover Letter/i.test(m.content) && /\(English\)/i.test(m.content));
   const msgHasClDe = (m) => docSections(m.content).some((s) => isClHeading(s.heading) && clIsDe(s.heading))
@@ -584,12 +621,14 @@ app.post('/api/export-package', async (req, res) => {
   const outDir = path.join(__dirname, 'moje_dok', 'odt');
   fs.mkdirSync(outDir, { recursive: true });
 
-  // Standalone CV (regenerated outside a package): whole message is the CV,
-  // skip the H1 title line — the document gets the package title anyway.
+  // Standalone CV (regenerated outside a package): whole message is the CV.
+  // Drop the H1 name line and any chatty intro that precedes it — the
+  // document gets the package title anyway.
   function standaloneCv(mdRaw) {
     const md = unwrapCodeFence(mdRaw);
-    if (/^#\s+.*Kuehn/im.test(md)) {
-      return md.replace(/^#[^\n]*\n/, '').trim();
+    const h1 = /^.*?^#[^\n]*Kuehn[^\n]*\n/im.exec(md);
+    if (h1) {
+      return md.slice(h1.index + h1[0].length).trim();
     }
     return null;
   }
@@ -610,7 +649,46 @@ app.post('/api/export-package', async (req, res) => {
     const byName = sections.find((s) =>
       kind === 'CV' ? isCvHeading(s.heading)
         : isClHeading(s.heading) && (wantDe ? clIsDe(s.heading) : clIsEn(s.heading)));
-    return byName ? byName.body : null;
+    if (byName) return byName.body;
+    // Fallback for combined sections like "## 4. CV (EN) i Cover Letter (EN)":
+    // the CV lives inside a numbered parent whose heading mentions it — take
+    // that parent's body up to the next SAME-LEVEL heading.
+    const wanted = kind === 'CV' ? 'CV' : 'Cover Letter';
+    const combined = sections.find((s) =>
+      new RegExp(`\\b${wanted}\\b`, 'i').test(s.heading) && /^4\./.test(s.heading));
+    if (combined) {
+      if (kind !== 'CV') return combined.body;
+      // Combined section: the CV is everything from the section start until
+      // the inner cover-letter heading (### COVER LETTER (EN) etc.).
+      const clHead = docSections(combined.body).find((s) => isClHeading(s.heading));
+      return clHead ? combined.body.slice(0, combined.body.indexOf(`### ${clHead.heading}`)).trim() : combined.body;
+    }
+    // Last resort: the CV may be the content that starts with the name H3
+    // (e.g. "### TOMASZ KUEHN") directly under a numbered section.
+    if (kind === 'CV') {
+      const kuehn = sections.find((s) => /^Kuehn\b/i.test(s.heading));
+      if (kuehn) {
+        const before = sections.slice(0, sections.indexOf(kuehn))
+          .filter((s) => /^4\./.test(s.heading));
+        if (before.length) return combinedBody(md, kuehn);
+      }
+    }
+    return null;
+  }
+
+  // From the body text of the section starting at heading h (used when we
+  // located the CV by its inner "### <name>" heading): the CV body starts at
+  // that inner heading and runs until the next same-or-higher level heading
+  // that is NOT part of the CV (inner H3s belong to the CV; an H2 or another
+  // numbered/H2 section ends it).
+  function combinedBody(md, startSection) {
+    const re = new RegExp(`^#{2,4}\\s+${startSection.heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm');
+    const m = re.exec(md);
+    if (!m) return startSection.body;
+    const start = m.index + m[0].length;
+    const rest = md.slice(start);
+    const stop = rest.search(/^##\s/m);
+    return (stop === -1 ? rest : rest.slice(0, stop)).trim();
   }
 
   const cvFromPkg = cvMsg ? sectionBody(mdOf(cvMsg), 'CV') : null;
@@ -635,8 +713,11 @@ app.post('/api/export-package', async (req, res) => {
 
   // Re-exporting the SAME content must not create a new indexed version.
   // A per-conversation manifest maps each part to the content hash of its
-  // last export; identical content reuses the existing file.
-  const manifestPath = path.join(outDir, safeName + '.manifest.json');
+  // last export; identical content reuses the existing file. The manifest is
+  // keyed by the conversation ID (stable across renames), so two different
+  // conversations never share export state even when their file names are
+  // similar.
+  const manifestPath = path.join(outDir, conversationId + '.manifest.json');
   let manifest = {};
   try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch { /* first export */ }
   const contentHash = (text) => crypto.createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12);

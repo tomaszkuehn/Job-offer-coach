@@ -25,6 +25,13 @@
     .sidebar h1 { font-size: 18px; margin-bottom: 4px; }
     .sidebar .sub { font-size: 12px; color: #7b8794; margin-bottom: 20px; }
     .section { margin-bottom: 24px; }
+    #convList { max-height: 320px; overflow-y: auto; border: 1px solid #e4e7eb; border-radius: 6px; padding: 4px; }
+    #convList:empty { border: none; padding: 0; }
+    #convSearch { margin-top: 8px; }
+    .conv-match {
+      display: block; font-size: 10px; color: #2563eb; margin: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
     .section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: #52606d; margin-bottom: 10px; }
     .section-toggle {
       display: flex; align-items: center; justify-content: space-between;
@@ -307,6 +314,7 @@
     <div class="section">
       <h2>Conversations</h2>
       <div id="convList"></div>
+      <input type="text" id="convSearch" placeholder="Search titles or message contents…" style="width:100%; margin-top:8px" />
       <button class="btn secondary" id="newConvBtn" style="width:100%; margin-top:8px">+ New conversation</button>
     </div>
 
@@ -406,6 +414,7 @@
     const overlayBody = document.getElementById('overlayBody');
     const overlayMeta = document.getElementById('overlayMeta');
     const convListEl = document.getElementById('convList');
+const convSearchEl = document.getElementById('convSearch');
     const nameOverlay = document.getElementById('nameOverlay');
     const convNameInput = document.getElementById('convNameInput');
     const modelSlotsEl = document.getElementById('modelSlots');
@@ -777,7 +786,9 @@ let exportMarkerIdx = null;
       if (!list.length) {
         const d = document.createElement('div');
         d.className = 'status';
-        d.textContent = 'No saved conversations';
+        d.textContent = convSearchEl.value.trim()
+          ? 'No conversations match the search'
+          : 'No saved conversations';
         convListEl.appendChild(d);
         return;
       }
@@ -797,6 +808,12 @@ let exportMarkerIdx = null;
         time.textContent = formatConvTime(c.updatedAt || c.createdAt);
         wrap.appendChild(span);
         wrap.appendChild(time);
+        if (c.matchType === 'body' && c.snippet) {
+          const snip = document.createElement('span');
+          snip.className = 'conv-match';
+          snip.textContent = '↳ ' + c.snippet;
+          wrap.appendChild(snip);
+        }
         label.appendChild(wrap);
         label.addEventListener('click', () => loadConversation(c.id));
         const rename = document.createElement('button');
@@ -854,11 +871,31 @@ let exportMarkerIdx = null;
       });
     }
 
-    async function loadConversations() {
-      const res = await fetch('/api/conversations');
-      const list = await res.json();
+    async function loadConversations(q) {
+      let list;
+      if (q && q.trim()) {
+        const res = await fetch('/api/conversations/search?q=' + encodeURIComponent(q.trim()));
+        list = await res.json();
+      } else {
+        const res = await fetch('/api/conversations');
+        list = await res.json();
+      }
       renderConversations(list);
     }
+
+    // Conversation search: debounced server search across titles and bodies
+    let convSearchTimer = null;
+    convSearchEl.addEventListener('input', () => {
+      if (convSearchTimer) clearTimeout(convSearchTimer);
+      convSearchTimer = setTimeout(() => loadConversations(convSearchEl.value), 250);
+    });
+    convSearchEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        convSearchEl.value = '';
+        loadConversations('');
+        convSearchEl.blur();
+      }
+    });
 
     function renderChat() {
       chatEl.innerHTML = '';

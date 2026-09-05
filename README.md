@@ -74,6 +74,9 @@ Click **Save configuration** (the button pulses red when there are unsaved chang
 
 - **+ New conversation** — asks for a name; the typed name is applied to the conversation being closed, and the new one starts with a default timestamped name, keeping the RAG selection and model.
 - Clicking a name in the list **restores** the conversation together with its RAG files. The browsed conversation stays in place on the list and is highlighted in green.
+- The list is **scrollable** (fixed height) and has a **search box**: matching
+  covers conversation **titles** and **message contents** — body matches show
+  a snippet under the name. **Esc** clears the search.
 - **✎** renames, **✕** deletes a conversation.
 - While a model response is **streaming**, switching conversations (or starting a new one) asks for confirmation — the in-flight reply would be lost.
 - The **preview overlay** is keyboard-driven: **Enter** sends, **Esc** cancels.
@@ -99,7 +102,8 @@ on PATH).
 - **Indexed file names**: every export creates new files, never overwrites:
   `<conversation>_CV_1.odt`, `..._CV_2.odt`, `..._CoverLetter_EN_3.odt`, …
   Re-exporting **unchanged** content reuses the existing file (content-hash
-  manifest per conversation) instead of bumping the index.
+  manifest keyed by conversation ID — stable across renames) instead of
+  bumping the index. Export always reads **only the current conversation**.
 - **Partial-failure handling**: if a document cannot be written (e.g. the file
   is open in LibreOffice), the export retries once under a timestamped
   alternative name; the UI reports which parts succeeded, which failed, and
@@ -144,6 +148,7 @@ on PATH).
 | POST | `/api/chat/stream` | Streaming chat: proxies upstream NDJSON, emits plain-text chunks, model name in the `X-Model` header |
 | POST | `/api/context-size` | Estimate context size (chars + tokens) for the current selection |
 | GET | `/api/conversations` | List conversations |
+| GET | `/api/conversations/search?q=` | Search conversations by title or message content (returns index entries with `matchType` and `snippet` for body matches) |
 | GET | `/api/conversations/:id` | Get a conversation (read-only; does not touch global config) |
 | POST | `/api/conversations` | Create or update a conversation (`id` optional); bumps `updatedAt` only when content changes |
 | POST | `/api/conversations/:id/rename` | Rename a conversation |
