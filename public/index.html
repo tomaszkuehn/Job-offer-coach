@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Chat — Job Offers</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='18' fill='%232563eb'/%3E%3Ctext x='50' y='60' font-size='54' text-anchor='middle' dominant-baseline='middle' font-family='Segoe UI Emoji,Apple Color Emoji,Noto Color Emoji,sans-serif'%3E%F0%9F%92%BC%3C/text%3E%3C/svg%3E" />
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -270,6 +271,18 @@
       color: #3730a3;
       margin-bottom: 6px;
     }
+    .msg-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .msg-head .model-badge { margin-bottom: 0; }
+    .msg-pin {
+      background: none; border: none; cursor: pointer; font-size: 13px;
+      color: #9aa5b1; padding: 2px 4px; border-radius: 4px; line-height: 1;
+    }
+    .msg-pin:hover { color: #2563eb; background: #eff6ff; }
+    .msg-pin.pinned { color: #b25e09; background: #fef3e2; }
+    .export-marker-note {
+      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px;
+      padding: 2px 8px; border-radius: 4px; background: #fef3e2; color: #b25e09; margin-bottom: 0;
+    }
     .ctx-size {
       font-size: 13px;
       font-weight: 700;
@@ -400,8 +413,10 @@
     const modelSwitcher = document.getElementById('modelSwitcher');
 
     let pendingSend = null;
+let streamingActive = false; // a model response is being streamed
     let currentConvId = null;
     let currentConvName = null;
+let exportMarkerIdx = null;
     let currentConvModelIndex = null;
 
     let messages = [];
@@ -853,14 +868,34 @@
         d.textContent = 'Enter a job offer description below to get started.';
         chatEl.appendChild(d);
       } else {
-        messages.forEach((m) => {
+        messages.forEach((m, idx) => {
           const div = document.createElement('div');
           div.className = 'msg ' + m.role;
-          if (m.role === 'assistant' && m.model) {
-            const badge = document.createElement('div');
-            badge.className = 'model-badge';
-            badge.textContent = m.model;
-            div.appendChild(badge);
+          const isPinned = (m.role === 'assistant' && exportMarkerIdx === idx);
+          if (m.role === 'assistant') {
+            const head = document.createElement('div');
+            head.className = 'msg-head';
+            if (m.model) {
+              const badge = document.createElement('div');
+              badge.className = 'model-badge';
+              badge.textContent = m.model;
+              head.appendChild(badge);
+            }
+            if (isPinned) {
+              const note = document.createElement('span');
+              note.className = 'export-marker-note';
+              note.textContent = 'export source';
+              head.appendChild(note);
+            }
+            const pin = document.createElement('button');
+            pin.className = 'msg-pin' + (isPinned ? ' pinned' : '');
+            pin.title = isPinned
+              ? 'Unpin: back to automatic CV/Cover Letter detection for export'
+              : 'Pin this message as the export source (CV + Cover Letters come from here)';
+            pin.textContent = isPinned ? '📌' : '⚐';
+            pin.addEventListener('click', () => setExportMarker(isPinned ? null : idx));
+            head.appendChild(pin);
+            div.appendChild(head);
           }
           if (m.role === 'assistant' && typeof marked !== 'undefined') {
             const md = document.createElement('div');
@@ -876,7 +911,36 @@
       }
     }
 
+    // Set / clear the manual export-source marker on this conversation
+    async function setExportMarker(msgIndex) {
+      if (!currentConvId) return;
+      try {
+        const res = await fetch('/api/conversations/' + currentConvId + '/export-marker', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ msgIndex })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          exportMarkerIdx = data.exportMarker;
+          renderChat();
+        }
+      } catch { /* ignore */ }
+    }
+
+    // Guard: switching away while a model response is streaming can lose the
+    // in-flight reply — require confirmation.
+    function confirmLeaveWhileStreaming() {
+      if (!streamingActive) return true;
+      return confirm(
+        'A model response is still streaming.\n\n' +
+        'Switching conversations now may LOSE this reply (it will not be saved).\n\n' +
+        'Leave anyway?'
+      );
+    }
+
     async function loadConversation(id) {
+      if (id !== currentConvId && !confirmLeaveWhileStreaming()) return;
       const res = await fetch('/api/conversations/' + id);
       if (!res.ok) return;
       const conv = await res.json();
@@ -885,6 +949,7 @@
       currentConvModelIndex = (conv.modelIndex !== undefined && conv.modelIndex !== null) ? conv.modelIndex : null;
       messages = conv.messages || [];
       selectedFiles = conv.selectedFiles || [];
+      exportMarkerIdx = (typeof conv.exportMarker === 'number') ? conv.exportMarker : null;
       renderChat();
       renderFiles();
       scheduleCtxUpdate();
@@ -949,6 +1014,7 @@
     }
 
     async function startNewConversation() {
+      if (!confirmLeaveWhileStreaming()) return;
       const name = convNameInput.value.trim();
       hideNameOverlay();
 
@@ -964,6 +1030,7 @@
       currentConvId = null;
       currentConvName = null;
       currentConvModelIndex = null;
+      exportMarkerIdx = null;
       messages = [];
       renderChat();
       renderFiles();
@@ -1061,6 +1128,7 @@
       btn.disabled = true;
       status.style.color = '';
       status.textContent = 'Exporting…';
+      const clearLater = (ms) => setTimeout(() => { status.textContent = ''; status.style.color = ''; }, ms);
       try {
         const res = await fetch('/api/export-package', {
           method: 'POST',
@@ -1068,19 +1136,32 @@
           body: JSON.stringify({ conversationId: currentConvId })
         });
         const data = await res.json();
-        if (res.ok) {
+        if (res.ok && !data.failed) {
           status.style.color = '#1e7e34';
           status.textContent = 'Exported: ' + data.exported.join(', ').replaceAll('_', ' ');
+          clearLater(6000);
+        } else if (res.ok && data.failed) {
+          // Partial success: some documents could not be written
+          status.style.color = '#b25e09';
+          status.textContent = 'Exported: ' + data.exported.join(', ').replaceAll('_', ' ');
+          const note = document.createElement('div');
+          note.style.cssText = 'margin-top:6px; font-size:11px; color:#a12b2b; white-space:normal';
+          note.innerHTML = '<b>Failed:</b> ' + data.failed.map((f) => f.replaceAll('_', ' ')).join('; ')
+            + '<br><br>File may be locked (open in LibreOffice/Word?) or read-only.'
+            + '<br><b>Suggestion:</b> close the file and click Export again — the app will save under an alternative name automatically.';
+          status.appendChild(note);
+          clearLater(12000);
         } else {
           status.style.color = '#a12b2b';
           status.textContent = data.error || 'Export failed';
+          clearLater(6000);
         }
       } catch (e) {
         status.style.color = '#a12b2b';
         status.textContent = 'Export failed: ' + e.message;
+        clearLater(6000);
       } finally {
         btn.disabled = false;
-        setTimeout(() => { status.textContent = ''; status.style.color = ''; }, 6000);
       }
     });
 
@@ -1090,6 +1171,8 @@
     function hideOverlay() {
       overlay.classList.remove('show');
       pendingSend = null;
+      // Preview was cancelled — re-enable Send so the next message can go out
+      sendBtn.disabled = false;
     }
 
     function renderPreview(data) {
@@ -1146,10 +1229,12 @@
     }
 
     async function doSend() {
+      if (!pendingSend) return; // Enter pressed with no active preview
       const msgs = pendingSend.messages;
       const modelIndex = pendingSend.modelIndex;
       hideOverlay();
       sendBtn.disabled = true;
+      streamingActive = true;
 
       const wrap = document.createElement('div');
       wrap.className = 'msg assistant';
@@ -1221,6 +1306,7 @@
         wrap.remove();
         addMsg('error', 'Connection error: ' + e.message);
       }
+      streamingActive = false;
       sendBtn.disabled = false;
     }
 
@@ -1229,6 +1315,19 @@
     document.getElementById('overlaySend').addEventListener('click', doSend);
     overlay.addEventListener('click', (e) => {
       if (e.target === overlay) hideOverlay();
+    });
+    // Enter (without Shift) in the preview overlay sends, Esc cancels
+    document.addEventListener('keydown', (e) => {
+      if (!overlay.classList.contains('show')) return;
+      if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey) {
+        // Ignore Enter pressed inside a text input/textarea (none expected here)
+        if (e.target instanceof HTMLElement && ['TEXTAREA', 'INPUT'].includes(e.target.tagName)) return;
+        e.preventDefault();
+        doSend();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        hideOverlay();
+      }
     });
 
     sendBtn.addEventListener('click', send);

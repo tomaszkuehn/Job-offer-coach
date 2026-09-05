@@ -75,26 +75,40 @@ Click **Save configuration** (the button pulses red when there are unsaved chang
 - **+ New conversation** — asks for a name; the typed name is applied to the conversation being closed, and the new one starts with a default timestamped name, keeping the RAG selection and model.
 - Clicking a name in the list **restores** the conversation together with its RAG files. The browsed conversation stays in place on the list and is highlighted in green.
 - **✎** renames, **✕** deletes a conversation.
+- While a model response is **streaming**, switching conversations (or starting a new one) asks for confirmation — the in-flight reply would be lost.
+- The **preview overlay** is keyboard-driven: **Enter** sends, **Esc** cancels.
 
 ### Exporting CV & Cover Letters (ODT)
 
-When the model produces an application package (CV + cover letter sections
-`4a/4b/4c`), the sidebar button **"Export CV & Cover Letter (ODT)"** extracts
-the sections and converts them to OpenDocument Text with **pandoc**
-(requires `pandoc` on PATH).
+When the model produces an application package (CV + cover letter sections),
+the sidebar button **"Export CV & Cover Letter (ODT)"** extracts the sections
+and converts them to OpenDocument Text with **pandoc** (requires `pandoc`
+on PATH).
 
+- **Section detection is format-tolerant**: numbered headings (`### 4a.`, `4b.`, `4c.`),
+  natural-language headings on H2–H4 (`## CV (English…)`, `### Cover Letter (EN)`,
+  `## Anschreiben (Deutsch…)`), and standalone CV regeneration messages
+  (`# Tomasz Kuehn …`, also inside a ```markdown fence) are all recognized.
 - Each part is taken from the **latest** assistant message containing it —
   a full package, a partial package update, or a standalone CV regeneration
-  (an `# TOMASZ KUEHN ...` message) all count, so the newest version always wins.
+  all count, so the newest version always wins.
+- **Manual source pin**: if auto-detection fails, click the **⚐** button on any
+  assistant message to pin it as the export source (📌 *export source* label,
+  one per conversation, survives saves); click again to unpin and return to
+  automatic detection.
 - **Indexed file names**: every export creates new files, never overwrites:
   `<conversation>_CV_1.odt`, `..._CV_2.odt`, `..._CoverLetter_EN_3.odt`, …
   Re-exporting **unchanged** content reuses the existing file (content-hash
   manifest per conversation) instead of bumping the index.
+- **Partial-failure handling**: if a document cannot be written (e.g. the file
+  is open in LibreOffice), the export retries once under a timestamped
+  alternative name; the UI reports which parts succeeded, which failed, and
+  suggests closing the file and re-exporting.
 - Output goes to `moje_dok/odt/`; styling comes from a bundled reference
   document (`tools/reference-liberation.odt`): Liberation Sans/Serif fonts,
   10.5 pt base size, compact paragraph spacing, table borders (pandoc emits
   borderless tables — the server patches them in), single-line horizontal
-  rules, and `—`/`–` converted to plain `-`.
+  rules, **no page numbers** (empty footer), and `—`/`–` converted to plain `-`.
 
 ## Project structure
 
@@ -133,8 +147,9 @@ the sections and converts them to OpenDocument Text with **pandoc**
 | GET | `/api/conversations/:id` | Get a conversation (read-only; does not touch global config) |
 | POST | `/api/conversations` | Create or update a conversation (`id` optional); bumps `updatedAt` only when content changes |
 | POST | `/api/conversations/:id/rename` | Rename a conversation |
+| POST | `/api/conversations/:id/export-marker` | Pin / unpin the manual export-source message (`{ msgIndex: number|null }`) |
 | DELETE | `/api/conversations/:id` | Delete a conversation |
-| POST | `/api/export-package` | Extract CV + cover letters from the latest package in a conversation and convert them to ODT (`{ conversationId }`) |
+| POST | `/api/export-package` | Extract CV + cover letters from the latest package (or the pinned message) in a conversation and convert them to ODT (`{ conversationId }`); returns `207` with a `failed` list on partial success |
 
 Chat requests (`preview`, `chat`, `chat/stream`, `context-size`) accept
 `{ messages, modelIndex, selectedFiles, conversationId }` — the RAG file

@@ -411,7 +411,9 @@ app.post('/api/conversations', (req, res) => {
     updatedAt,
     messages,
     selectedFiles: keptFiles,
-    modelIndex: (modelIndex !== undefined ? modelIndex : null)
+    modelIndex: (modelIndex !== undefined ? modelIndex : null),
+    // Preserve a manually set export marker (index of the source message)
+    exportMarker: (prev && typeof prev.exportMarker === 'number' ? prev.exportMarker : null)
   };
   fs.writeFileSync(path.join(convDir, 'conversation.json'), JSON.stringify(conv, null, 2));
 
@@ -447,6 +449,28 @@ app.post('/api/conversations/:id/rename', (req, res) => {
   res.json({ ok: true });
 });
 
+// Manual export marker: pin the message the export should use as source
+// (fallback for when automatic CV/CL detection fails). One marker per
+// conversation; msgIndex null clears it.
+app.post('/api/conversations/:id/export-marker', (req, res) => {
+  const { msgIndex } = req.body || {};
+  const id = req.params.id;
+  const conv = loadConversation(id);
+  if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+
+  let marker = null;
+  if (msgIndex !== null && msgIndex !== undefined) {
+    const idx = Number(msgIndex);
+    const msg = conv.messages[idx];
+    if (!msg) return res.status(400).json({ error: 'msgIndex out of range' });
+    if (msg.role !== 'assistant') return res.status(400).json({ error: 'Marker can only be set on an assistant message' });
+    marker = idx;
+  }
+  conv.exportMarker = marker;
+  fs.writeFileSync(path.join(CONVERSATIONS_DIR, id, 'conversation.json'), JSON.stringify(conv, null, 2));
+  res.json({ ok: true, exportMarker: marker });
+});
+
 app.delete('/api/conversations/:id', (req, res) => {
   const id = req.params.id;
   const dir = path.join(CONVERSATIONS_DIR, id);
@@ -470,25 +494,79 @@ app.post('/api/export-package', async (req, res) => {
   // updates, standalone CV regenerations). For each part (CV / CL_EN / CL_DE)
   // export from the LATEST assistant message that contains it.
   const assistants = conv.messages.filter((m) => m.role === 'assistant');
-  const isCv = (m) => /###\s*4a\./i.test(m.content) || /^#\s+.*KUEHN/m.test(m.content);
-  const isClEn = (m) => /###\s*4b\./i.test(m.content) || (/Cover Letter/i.test(m.content) && /\(English\)/i.test(m.content));
-  const isClDe = (m) => /###\s*4c\./i.test(m.content) || (/Cover Letter/i.test(m.content) && /Deutsch/i.test(m.content));
+
+  // Split a message into "## ..." / "### ..." sections: { heading, body }.
+  // Models use either level for document sections (e.g. "### 4a." in a full
+  // package vs "## CV" in an update message), so parse both.
+  function docSections(md) {
+    const out = [];
+    const re = /^(#{2,4})\s+([^\n]*)/gm;
+    let m;
+    while ((m = re.exec(md)) !== null) {
+      const level = m[1].length;
+      const start = m.index + m[0].length;
+      const rest = md.slice(start);
+      const next = rest.search(new RegExp(`^#{${level},${4}}\\s`, 'm'));
+      const body = (next === -1 ? rest : rest.slice(0, next)).trim();
+      out.push({ heading: m[2].trim(), body });
+    }
+    return out;
+  }
+
+  const isCvHeading = (h) => /^4a\b/i.test(h) || /^CV\b/i.test(h);
+  const isClHeading = (h) => /^4b\b/i.test(h) || /^4c\b/i.test(h) || /^Cover\s*Letter/i.test(h) || /^Anschreiben/i.test(h);
+  const clIsDe = (h) => /\bDE\b|German|Deutsch|niemieck/i.test(h);
+  const clIsEn = (h) => /\bEN\b|English|angielsk/i.test(h) || !clIsDe(h); // unmarked EN CL = default
+
+  // Models sometimes wrap the whole answer in a ```markdown fence — strip it
+  // so headings/H1 detection work on the content itself.
+  function unwrapCodeFence(md) {
+    const t = md.trim();
+    const m = t.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n?```?\s*$/);
+    return m ? m[1] : md;
+  }
+
+  const msgHasCv = (m) => docSections(m.content).some((s) => isCvHeading(s.heading))
+    || /^#\s+.*Kuehn/i.test(unwrapCodeFence(m.content));
+  const msgHasClEn = (m) => docSections(m.content).some((s) => isClHeading(s.heading) && clIsEn(s.heading))
+    || (/Cover Letter/i.test(m.content) && /\(English\)/i.test(m.content));
+  const msgHasClDe = (m) => docSections(m.content).some((s) => isClHeading(s.heading) && clIsDe(s.heading))
+    || (/Cover Letter|Anschreiben/i.test(m.content) && /Deutsch|German/i.test(m.content));
+
   const latest = (pred) => [...assistants].reverse().find(pred);
 
-  const cvMsg = latest(isCv);
-  const clEnMsg = latest(isClEn);
-  const clDeMsg = latest(isClDe);
+  // Manual export marker overrides auto-detection: when the user pinned a
+  // message, use it as the source for every part it contains.
+  const pinned = (typeof conv.exportMarker === 'number'
+    && conv.messages[conv.exportMarker]
+    && conv.messages[conv.exportMarker].role === 'assistant')
+    ? conv.messages[conv.exportMarker]
+    : null;
+  const pick = (pred, autoMsg) => {
+    if (pinned) {
+      return pred(pinned) ? pinned : null; // only use the pinned message
+    }
+    return autoMsg;
+  };
+
+  const cvMsg = pick(msgHasCv, latest(msgHasCv));
+  const clEnMsg = pick(msgHasClEn, latest(msgHasClEn));
+  const clDeMsg = pick(msgHasClDe, latest(msgHasClDe));
   if (!cvMsg && !clEnMsg && !clDeMsg) {
-    return res.status(422).json({ error: 'No application package (CV + Cover Letter) found in this conversation' });
+    return res.status(422).json({
+      error: pinned
+        ? 'The pinned message does not contain CV or Cover Letter sections (click the pin on the right message, or unpin it)'
+        : 'No application package (CV + Cover Letter) found in this conversation'
+    });
   }
 
   // Title from the newest message that has one
   const titleMsg = [cvMsg, clEnMsg, clDeMsg].filter(Boolean)
-    .find((m) => /^#\s+(?:Pakiet|PAKIET|AKTUALIZACJA)/m.test(m.content) || /^#\s+.*KUEHN/m.test(m.content));
+    .find((m) => /^#\s+(?:Pakiet|PAKIET|AKTUALIZACJA)/im.test(m.content) || /^#\s+.*Kuehn/im.test(m.content));
   const mdOf = (m) => (m ? m.content : '');
   const titleSrc = mdOf(titleMsg || cvMsg);
-  const title = (titleSrc.match(/^#\s+(?:Pakiet|PAKIET|AKTUALIZACJA)[^\n]*/m)
-    || titleSrc.match(/^#\s+.*KUEHN[^\n]*/m)
+  const title = (titleSrc.match(/^#\s+(?:Pakiet|PAKIET|AKTUALIZACJA)[^\n]*/im)
+    || titleSrc.match(/^#\s+.*Kuehn[^\n]*/im)
     || ['Application package'])[0].replace(/^#\s+/i, '');
 
   const pandoc = await new Promise((resolve) => {
@@ -506,20 +584,12 @@ app.post('/api/export-package', async (req, res) => {
   const outDir = path.join(__dirname, 'moje_dok', 'odt');
   fs.mkdirSync(outDir, { recursive: true });
 
-  // Cut a subsection (e.g. "### 4a.") from a message, up to the next heading
-  function cutSection(md, startMarker) {
-    const s = md.indexOf(startMarker);
-    if (s === -1) return null;
-    const rest = md.slice(s + startMarker.length);
-    const m = rest.match(/^###|^## /m);
-    return (m ? rest.slice(0, m.index) : rest).trim();
-  }
-
   // Standalone CV (regenerated outside a package): whole message is the CV,
   // skip the H1 title line — the document gets the package title anyway.
-  function standaloneCv(md) {
-    if (/^#\s+.*KUEHN/m.test(md)) {
-      return md.replace(/^#.*\n/, '').trim();
+  function standaloneCv(mdRaw) {
+    const md = unwrapCodeFence(mdRaw);
+    if (/^#\s+.*Kuehn/im.test(md)) {
+      return md.replace(/^#[^\n]*\n/, '').trim();
     }
     return null;
   }
@@ -529,11 +599,25 @@ app.post('/api/export-package', async (req, res) => {
     return text.replace(/—/g, '-').replace(/–/g, '-');
   }
 
-  const cvFromPkg = cvMsg ? cutSection(mdOf(cvMsg), '### 4a.') : null;
+  // Pick the matching section body from a message, trying the numbered form
+  // (4a./4b./4c.) first, then natural-language headings.
+  function sectionBody(md, kind) {
+    const sections = docSections(md);
+    const wantDe = kind === 'CoverLetter_DE';
+    const exact = kind === 'CV' ? /^4a\./i : (wantDe ? /^4c\./i : /^4b\./i);
+    const byExact = sections.find((s) => exact.test(s.heading));
+    if (byExact) return byExact.body;
+    const byName = sections.find((s) =>
+      kind === 'CV' ? isCvHeading(s.heading)
+        : isClHeading(s.heading) && (wantDe ? clIsDe(s.heading) : clIsEn(s.heading)));
+    return byName ? byName.body : null;
+  }
+
+  const cvFromPkg = cvMsg ? sectionBody(mdOf(cvMsg), 'CV') : null;
   const parts = [
     ['CV', cvFromPkg || (cvMsg ? standaloneCv(mdOf(cvMsg)) : null)],
-    ['CoverLetter_EN', clEnMsg ? cutSection(mdOf(clEnMsg), '### 4b.') : null],
-    ['CoverLetter_DE', clDeMsg ? cutSection(mdOf(clDeMsg), '### 4c.') : null],
+    ['CoverLetter_EN', clEnMsg ? sectionBody(mdOf(clEnMsg), 'CoverLetter_EN') : null],
+    ['CoverLetter_DE', clDeMsg ? sectionBody(mdOf(clDeMsg), 'CoverLetter_DE') : null],
   ];
 
   // Each generated document gets an incrementing index: _CV_1.odt,
@@ -582,6 +666,7 @@ app.post('/api/export-package', async (req, res) => {
 
   try {
     let manifestDirty = false;
+    const failed = [];
     for (const [kind, content] of parts) {
       if (!content) continue;
       const hash = contentHash(stripEmDashes(content));
@@ -592,24 +677,64 @@ app.post('/api/export-package', async (req, res) => {
       }
       const base = `${safeName}_${kind}_${nextIndex(kind)}`;
       const mdTmp = path.join(outDir, base + '.md');
-      fs.writeFileSync(mdTmp, `# ${stripEmDashes(title)}\n\n${stripEmDashes(content)}`, 'utf8');
-      tmpFiles.push(mdTmp);
-      const odt = path.join(outDir, base + '.odt');
-      const refDoc = path.join(__dirname, 'tools', 'reference-liberation.odt');
-      const args = [mdTmp, '--from=gfm'];
-      if (fs.existsSync(refDoc)) args.push(`--reference-doc=${refDoc}`);
-      args.push('-o', odt);
-      await new Promise((resolve, reject) => {
-        execFile('pandoc', args, (err) => (err ? reject(err) : resolve()));
-      });
-      await addTableBorders(odt);
-      if (fs.existsSync(odt)) {
-        exported.push(path.basename(odt));
-        manifest[kind] = { hash, file: path.basename(odt) };
-        manifestDirty = true;
+      try {
+        fs.writeFileSync(mdTmp, `# ${stripEmDashes(title)}\n\n${stripEmDashes(content)}`, 'utf8');
+        tmpFiles.push(mdTmp);
+        const odt = path.join(outDir, base + '.odt');
+        const refDoc = path.join(__dirname, 'tools', 'reference-liberation.odt');
+        const args = [mdTmp, '--from=gfm'];
+        if (fs.existsSync(refDoc)) args.push(`--reference-doc=${refDoc}`);
+        args.push('-o', odt);
+        await new Promise((resolve, reject) => {
+          execFile('pandoc', args, (err) => (err ? reject(err) : resolve()));
+        });
+        await addTableBorders(odt);
+        if (fs.existsSync(odt)) {
+          exported.push(path.basename(odt));
+          manifest[kind] = { hash, file: path.basename(odt) };
+          manifestDirty = true;
+        } else {
+          failed.push(`${kind}: pandoc produced no output`);
+        }
+      } catch (eInner) {
+        // Write/conversion failure — often a Windows file lock (LibreOffice,
+        // antivirus) on the target name. Retry once with a timestamped name.
+        const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+        const altBase = `${base}_${stamp}`;
+        const mdAlt = path.join(outDir, altBase + '.md');
+        const odtAlt = path.join(outDir, altBase + '.odt');
+        try {
+          fs.writeFileSync(mdAlt, `# ${stripEmDashes(title)}\n\n${stripEmDashes(content)}`, 'utf8');
+          tmpFiles.push(mdAlt);
+          const refDoc = path.join(__dirname, 'tools', 'reference-liberation.odt');
+          const args = [mdAlt, '--from=gfm'];
+          if (fs.existsSync(refDoc)) args.push(`--reference-doc=${refDoc}`);
+          args.push('-o', odtAlt);
+          await new Promise((resolve, reject) => {
+            execFile('pandoc', args, (err) => (err ? reject(err) : resolve()));
+          });
+          await addTableBorders(odtAlt);
+          if (fs.existsSync(odtAlt)) {
+            exported.push(path.basename(odtAlt));
+            manifest[kind] = { hash, file: path.basename(odtAlt) };
+            manifestDirty = true;
+          } else {
+            failed.push(`${kind}: ${eInner.message}`);
+          }
+        } catch (eRetry) {
+          failed.push(`${kind}: ${eRetry.message}`);
+        }
       }
     }
     if (manifestDirty) fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    if (failed.length) {
+      return res.status(207).json({
+        ok: true,
+        exported,
+        failed,
+        outDir: 'moje_dok/odt'
+      });
+    }
   } catch (e) {
     return res.status(500).json({ error: 'Pandoc conversion failed: ' + e.message });
   } finally {
