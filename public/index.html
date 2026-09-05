@@ -1320,8 +1320,8 @@ let exportMarkerIdx = null;
     document.addEventListener('keydown', (e) => {
       if (!overlay.classList.contains('show')) return;
       if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey) {
-        // Ignore Enter pressed inside a text input/textarea (none expected here)
-        if (e.target instanceof HTMLElement && ['TEXTAREA', 'INPUT'].includes(e.target.tagName)) return;
+        // Enter always sends while the preview is open — even when focus is
+        // still in the chat textarea (that is the common case).
         e.preventDefault();
         doSend();
       } else if (e.key === 'Escape') {
