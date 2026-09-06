@@ -104,7 +104,8 @@ on PATH).
   is open in LibreOffice), the export retries once under a timestamped
   alternative name; the UI reports which parts succeeded, which failed, and
   suggests closing the file and re-exporting.
-- Output goes to `moje_dok/odt/`; styling comes from a bundled reference
+- Output goes to `moje_dok/odt/` ("moje dokumenty" = *my documents* — Polish
+  folder name kept for local continuity); styling comes from a bundled reference
   document (`tools/reference-liberation.odt`): Liberation Sans/Serif fonts,
   10.5 pt base size, compact paragraph spacing, table borders (pandoc emits
   borderless tables — the server patches them in), single-line horizontal
@@ -121,7 +122,7 @@ on PATH).
 │   └── reference-liberation.odt   # Pandoc reference doc: fonts, sizes, spacing, HR style
 ├── public/
 │   └── index.html                 # Frontend (single file: config panel + chat UI)
-├── moje_dok/                      # Local output (git-ignored)
+├── moje_dok/                      # Local output ("my documents", git-ignored)
 │   └── odt/                       # Exported CV / cover letter files + per-conversation manifests
 └── data/                          # Created automatically
     ├── config.json                # Model slots, active model, system prompt

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /*
  * extract-package.js — extract CV / Cover Letter sections from saved
- * "pakiet aplikacyjny" chat messages and convert them to ODT via pandoc.
+ * application-package chat messages and convert them to ODT via pandoc.
  *
  * Usage:
  *   node extract-package.js                 list conversations with packages
@@ -73,7 +73,7 @@ function main() {
   if (process.argv[3] !== undefined && packages[+process.argv[3]]) pkg = packages[+process.argv[3]];
 
   const md = pkg.content;
-  const title = (md.match(/^#\s+(?:Pakiet|PAKIET)[^\n]*/m) || ['Package'])[0]
+  const title = (md.match(/^#\s+(?:Pakiet|PAKIET|Package|APPLICATION)[^\n]*/m) || ['Package'])[0]
     .replace(/^#\s+/i, '').replace(/[—–]/g, '-');
   const base = slug(title);
   fs.mkdirSync(OUT_DIR, { recursive: true });
