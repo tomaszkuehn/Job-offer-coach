@@ -280,16 +280,6 @@
     }
     .msg-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
     .msg-head .model-badge { margin-bottom: 0; }
-    .msg-pin {
-      background: none; border: none; cursor: pointer; font-size: 13px;
-      color: #9aa5b1; padding: 2px 4px; border-radius: 4px; line-height: 1;
-    }
-    .msg-pin:hover { color: #2563eb; background: #eff6ff; }
-    .msg-pin.pinned { color: #b25e09; background: #fef3e2; }
-    .export-marker-note {
-      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px;
-      padding: 2px 8px; border-radius: 4px; background: #fef3e2; color: #b25e09; margin-bottom: 0;
-    }
     .ctx-size {
       font-size: 13px;
       font-weight: 700;
@@ -425,7 +415,6 @@ const convSearchEl = document.getElementById('convSearch');
 let streamingActive = false; // a model response is being streamed
     let currentConvId = null;
     let currentConvName = null;
-let exportMarkerIdx = null;
     let currentConvModelIndex = null;
 
     let messages = [];
@@ -908,7 +897,6 @@ let exportMarkerIdx = null;
         messages.forEach((m, idx) => {
           const div = document.createElement('div');
           div.className = 'msg ' + m.role;
-          const isPinned = (m.role === 'assistant' && exportMarkerIdx === idx);
           if (m.role === 'assistant') {
             const head = document.createElement('div');
             head.className = 'msg-head';
@@ -918,20 +906,6 @@ let exportMarkerIdx = null;
               badge.textContent = m.model;
               head.appendChild(badge);
             }
-            if (isPinned) {
-              const note = document.createElement('span');
-              note.className = 'export-marker-note';
-              note.textContent = 'export source';
-              head.appendChild(note);
-            }
-            const pin = document.createElement('button');
-            pin.className = 'msg-pin' + (isPinned ? ' pinned' : '');
-            pin.title = isPinned
-              ? 'Unpin: back to automatic CV/Cover Letter detection for export'
-              : 'Pin this message as the export source (CV + Cover Letters come from here)';
-            pin.textContent = isPinned ? '📌' : '⚐';
-            pin.addEventListener('click', () => setExportMarker(isPinned ? null : idx));
-            head.appendChild(pin);
             div.appendChild(head);
           }
           if (m.role === 'assistant' && typeof marked !== 'undefined') {
@@ -946,23 +920,6 @@ let exportMarkerIdx = null;
         });
         chatEl.scrollTop = chatEl.scrollHeight;
       }
-    }
-
-    // Set / clear the manual export-source marker on this conversation
-    async function setExportMarker(msgIndex) {
-      if (!currentConvId) return;
-      try {
-        const res = await fetch('/api/conversations/' + currentConvId + '/export-marker', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ msgIndex })
-        });
-        const data = await res.json();
-        if (res.ok) {
-          exportMarkerIdx = data.exportMarker;
-          renderChat();
-        }
-      } catch { /* ignore */ }
     }
 
     // Guard: switching away while a model response is streaming can lose the
@@ -986,7 +943,6 @@ let exportMarkerIdx = null;
       currentConvModelIndex = (conv.modelIndex !== undefined && conv.modelIndex !== null) ? conv.modelIndex : null;
       messages = conv.messages || [];
       selectedFiles = conv.selectedFiles || [];
-      exportMarkerIdx = (typeof conv.exportMarker === 'number') ? conv.exportMarker : null;
       renderChat();
       renderFiles();
       scheduleCtxUpdate();
@@ -1067,7 +1023,6 @@ let exportMarkerIdx = null;
       currentConvId = null;
       currentConvName = null;
       currentConvModelIndex = null;
-      exportMarkerIdx = null;
       messages = [];
       renderChat();
       renderFiles();

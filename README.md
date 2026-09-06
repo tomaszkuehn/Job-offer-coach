@@ -95,10 +95,6 @@ on PATH).
 - Each part is taken from the **latest** assistant message containing it —
   a full package, a partial package update, or a standalone CV regeneration
   all count, so the newest version always wins.
-- **Manual source pin**: if auto-detection fails, click the **⚐** button on any
-  assistant message to pin it as the export source (📌 *export source* label,
-  one per conversation, survives saves); click again to unpin and return to
-  automatic detection.
 - **Indexed file names**: every export creates new files, never overwrites:
   `<conversation>_CV_1.odt`, `..._CV_2.odt`, `..._CoverLetter_EN_3.odt`, …
   Re-exporting **unchanged** content reuses the existing file (content-hash
@@ -152,9 +148,8 @@ on PATH).
 | GET | `/api/conversations/:id` | Get a conversation (read-only; does not touch global config) |
 | POST | `/api/conversations` | Create or update a conversation (`id` optional); bumps `updatedAt` only when content changes |
 | POST | `/api/conversations/:id/rename` | Rename a conversation |
-| POST | `/api/conversations/:id/export-marker` | Pin / unpin the manual export-source message (`{ msgIndex: number|null }`) |
 | DELETE | `/api/conversations/:id` | Delete a conversation |
-| POST | `/api/export-package` | Extract CV + cover letters from the latest package (or the pinned message) in a conversation and convert them to ODT (`{ conversationId }`); returns `207` with a `failed` list on partial success |
+| POST | `/api/export-package` | Extract CV + cover letters from the latest package in a conversation and convert them to ODT (`{ conversationId }`); returns `207` with a `failed` list on partial success |
 
 Chat requests (`preview`, `chat`, `chat/stream`, `context-size`) accept
 `{ messages, modelIndex, selectedFiles, conversationId }` — the RAG file

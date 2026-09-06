@@ -445,9 +445,7 @@ app.post('/api/conversations', (req, res) => {
     updatedAt,
     messages,
     selectedFiles: keptFiles,
-    modelIndex: (modelIndex !== undefined ? modelIndex : null),
-    // Preserve a manually set export marker (index of the source message)
-    exportMarker: (prev && typeof prev.exportMarker === 'number' ? prev.exportMarker : null)
+    modelIndex: (modelIndex !== undefined ? modelIndex : null)
   };
   fs.writeFileSync(path.join(convDir, 'conversation.json'), JSON.stringify(conv, null, 2));
 
@@ -483,28 +481,6 @@ app.post('/api/conversations/:id/rename', (req, res) => {
   res.json({ ok: true });
 });
 
-// Manual export marker: pin the message the export should use as source
-// (fallback for when automatic CV/CL detection fails). One marker per
-// conversation; msgIndex null clears it.
-app.post('/api/conversations/:id/export-marker', (req, res) => {
-  const { msgIndex } = req.body || {};
-  const id = req.params.id;
-  const conv = loadConversation(id);
-  if (!conv) return res.status(404).json({ error: 'Conversation not found' });
-
-  let marker = null;
-  if (msgIndex !== null && msgIndex !== undefined) {
-    const idx = Number(msgIndex);
-    const msg = conv.messages[idx];
-    if (!msg) return res.status(400).json({ error: 'msgIndex out of range' });
-    if (msg.role !== 'assistant') return res.status(400).json({ error: 'Marker can only be set on an assistant message' });
-    marker = idx;
-  }
-  conv.exportMarker = marker;
-  fs.writeFileSync(path.join(CONVERSATIONS_DIR, id, 'conversation.json'), JSON.stringify(conv, null, 2));
-  res.json({ ok: true, exportMarker: marker });
-});
-
 app.delete('/api/conversations/:id', (req, res) => {
   const id = req.params.id;
   const dir = path.join(CONVERSATIONS_DIR, id);
@@ -529,30 +505,77 @@ app.post('/api/export-package', async (req, res) => {
   // export from the LATEST assistant message that contains it.
   const assistants = conv.messages.filter((m) => m.role === 'assistant');
 
-  // Split a message into "## ..." / "### ..." sections: { heading, body }.
-  // Models use either level for document sections (e.g. "### 4a." in a full
-  // package vs "## CV" in an update message), so parse both. A section body
-  // ends at the next heading of the SAME or HIGHER level (H3 subsections
-  // belong to their H2 parent).
-  function docSections(md) {
+  // Document extraction is MARKER-based, not level-based: documents inside a
+  // chat message are delimited by their own headings (CV, Cover Letter, ...)
+  // and the next analysis section, regardless of heading level. Level-based
+  // parsing broke in three observed ways: emoji-prefixed headings
+  // ("### 📄 CV — ...") did not match, inner H3s (job entries inside an H3
+  // "### CV") truncated the body, and H1-delimited documents ("# COVER
+  // LETTER") swallowed the assistant's trailing commentary.
+  function listHeadings(md) {
     const out = [];
-    const re = /^(#{2,4})\s+([^\n]*)/gm;
+    const re = /^(#{1,6})\s+([^\n]*)/gm;
     let m;
     while ((m = re.exec(md)) !== null) {
-      const level = m[1].length;
-      const start = m.index + m[0].length;
-      const rest = md.slice(start);
-      const next = rest.search(new RegExp(`^#{1,${level}}\\s`, 'm'));
-      const body = (next === -1 ? rest : rest.slice(0, next)).trim();
-      out.push({ heading: m[2].trim(), body });
+      // Normalize: drop emoji/symbols/quotes so "📄 CV" and "CV" are equal
+      const norm = m[2].replace(/^[^\p{L}\p{N}]+/u, '').trim();
+      out.push({ level: m[1].length, raw: m[2].trim(), norm, index: m.index, end: m.index + m[0].length });
     }
     return out;
   }
 
-  const isCvHeading = (h) => /^4a\b/i.test(h) || /^CV\b/i.test(h);
-  const isClHeading = (h) => /^4b\b/i.test(h) || /^4c\b/i.test(h) || /^Cover\s*Letter/i.test(h) || /^Anschreiben/i.test(h);
-  const clIsDe = (h) => /\bDE\b|German|Deutsch|niemieck/i.test(h);
-  const clIsEn = (h) => /\bEN\b|English|angielsk/i.test(h) || !clIsDe(h); // unmarked EN CL = default
+  const RE_CV_NUM = /^4a[\s.:-]/i;
+  const RE_CV_WORD = /^CV\b/i;
+  const RE_CV_H1 = /^(?:TOMASZ\s+KUEHN|KUEHN)\b/i;
+  const RE_CL = /^(?:4b[\s.:-]|4c[\s.:-]|Cover\s*Letter|Anschreiben|Bewerbungsschreiben)/i;
+  const RE_NUM_SECTION = /^\d+\s*[.)]/;
+
+  const isCvStart = (h) => RE_CV_NUM.test(h.norm) || RE_CV_WORD.test(h.norm)
+    || (h.level === 1 && RE_CV_H1.test(h.norm));
+  const isClStart = (h) => RE_CL.test(h.norm);
+  // Language of a cover-letter heading: strong German markers only. Weak
+  // stems like "niemieck-" would false-positive on headings such as
+  // "Cover Letter (po angielsku, ... wersja niemiecka nie jest wymagana)",
+  // so require exact "niemiecki"/"po niemiecku" and drop DE when an explicit
+  // English marker is present. German-letter headings (Anschreiben,
+  // Bewerbungsschreiben) are DE by definition.
+  const RE_CL_DE = /\bDE\b|Deutsch|German\b|po niemiecku|niemiecki\b/i;
+  const RE_CL_EN = /\bEN\b|English|angielsku|angielski/i;
+  const isLangDe = (h) => (RE_CL_DE.test(h.norm) && !RE_CL_EN.test(h.norm))
+    || /^Bewerbungsschreiben|^Anschreiben/i.test(h.norm);
+  const isNumberedH2 = (h) => h.level === 2 && RE_NUM_SECTION.test(h.norm);
+
+  // Slice a document out of a message: body from the first heading matching
+  // `start` until the first later heading matching one of the `stop` rules.
+  // An enclosing code fence around the document body (```markdown ... ```)
+  // is stripped so pandoc does not render literal fence lines.
+  function extractDoc(md, start, stops) {
+    const heads = listHeadings(md);
+    const from = heads.find(start);
+    if (!from) return null;
+    let end = heads.length;
+    for (let i = heads.indexOf(from) + 1; i < heads.length; i++) {
+      if (stops.some((s) => s(heads[i]))) { end = i; break; }
+    }
+    const to = end < heads.length ? heads[end].index : md.length;
+    let body = md.slice(from.end, to).trim();
+    const fence = body.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n?```?\s*$/i);
+    if (fence) body = fence[1].trim();
+    return body;
+  }
+
+  // CV stops at a cover-letter heading or the next numbered analysis section
+  // ("## 5. ..."); inner headings (job entries, H1 name line) belong to the CV.
+  const extractCv = (md) => extractDoc(md, isCvStart, [isClStart, isNumberedH2]);
+  // A cover letter contains no headings of its own, so ANY next heading that
+  // is not another cover-letter marker ends it (drops trailing commentary).
+  // A cover-letter heading of the OTHER language also ends it, so the EN
+  // letter never swallows the DE letter that follows it in the same package.
+  const extractCl = (md, wantDe) => extractDoc(
+    md,
+    (h) => isClStart(h) && (wantDe ? isLangDe(h) : !isLangDe(h)),
+    [(h) => !isClStart(h), (h) => isClStart(h) && (wantDe ? !isLangDe(h) : isLangDe(h))]
+  );
 
   // Models sometimes wrap the whole answer in a ```markdown fence — strip it
   // so headings/H1 detection work on the content itself.
@@ -562,48 +585,27 @@ app.post('/api/export-package', async (req, res) => {
     return m ? m[1] : md;
   }
 
-  const msgHasCv = (m) => docSections(m.content).some((s) => isCvHeading(s.heading))
-    || docSections(m.content).some((s) => /\bCV\b/i.test(s.heading)) // combined "4. CV ... i Cover Letter" sections
-    || /^#[^\n]*Kuehn/im.test(unwrapCodeFence(m.content));
-  const msgHasClEn = (m) => docSections(m.content).some((s) => isClHeading(s.heading) && clIsEn(s.heading))
-    || (/Cover Letter/i.test(m.content) && /\(English\)/i.test(m.content));
-  const msgHasClDe = (m) => docSections(m.content).some((s) => isClHeading(s.heading) && clIsDe(s.heading))
-    || (/Cover Letter|Anschreiben/i.test(m.content) && /Deutsch|German/i.test(m.content));
+  const msgHasCv = (m) => extractCv(unwrapCodeFence(m.content)) !== null;
+  const msgHasCl = (m, wantDe) => extractCl(unwrapCodeFence(m.content), wantDe) !== null;
 
   const latest = (pred) => [...assistants].reverse().find(pred);
 
-  // Manual export marker overrides auto-detection: when the user pinned a
-  // message, use it as the source for every part it contains.
-  const pinned = (typeof conv.exportMarker === 'number'
-    && conv.messages[conv.exportMarker]
-    && conv.messages[conv.exportMarker].role === 'assistant')
-    ? conv.messages[conv.exportMarker]
-    : null;
-  const pick = (pred, autoMsg) => {
-    if (pinned) {
-      return pred(pinned) ? pinned : null; // only use the pinned message
-    }
-    return autoMsg;
-  };
-
-  const cvMsg = pick(msgHasCv, latest(msgHasCv));
-  const clEnMsg = pick(msgHasClEn, latest(msgHasClEn));
-  const clDeMsg = pick(msgHasClDe, latest(msgHasClDe));
+  // Every part is taken from the LATEST assistant message containing it, so
+  // the newest version always wins.
+  const cvMsg = latest(msgHasCv);
+  const clEnMsg = latest((m) => msgHasCl(m, false));
+  const clDeMsg = latest((m) => msgHasCl(m, true));
   if (!cvMsg && !clEnMsg && !clDeMsg) {
     return res.status(422).json({
-      error: pinned
-        ? 'The pinned message does not contain CV or Cover Letter sections (click the pin on the right message, or unpin it)'
-        : 'No application package (CV + Cover Letter) found in this conversation'
+      error: 'No application package (CV + Cover Letter) found in this conversation'
     });
   }
 
   // Title from the newest message that has one
   const titleMsg = [cvMsg, clEnMsg, clDeMsg].filter(Boolean)
     .find((m) => /^#\s+(?:Pakiet|PAKIET|AKTUALIZACJA)/im.test(m.content) || /^#\s+.*Kuehn/im.test(m.content));
-  const mdOf = (m) => (m ? m.content : '');
-  const titleSrc = mdOf(titleMsg || cvMsg);
-  const title = (titleSrc.match(/^#\s+(?:Pakiet|PAKIET|AKTUALIZACJA)[^\n]*/im)
-    || titleSrc.match(/^#\s+.*Kuehn[^\n]*/im)
+  const title = ((titleMsg || cvMsg || { content: '' }).content.match(/^#\s+(?:Pakiet|PAKIET|AKTUALIZACJA|Zaktualizowany|Zaktualizowana)[^\n]*/im)
+    || (titleMsg || cvMsg || { content: '' }).content.match(/^#\s+.*Kuehn[^\n]*/im)
     || ['Application package'])[0].replace(/^#\s+/i, '');
 
   const pandoc = await new Promise((resolve) => {
@@ -611,6 +613,30 @@ app.post('/api/export-package', async (req, res) => {
   });
   if (!pandoc) {
     return res.status(500).json({ error: 'pandoc not found on this system' });
+  }
+
+  // Cover letters end with a signature block (sign-off line + name, possibly
+  // contact details). Models often add commentary AFTER the letter but before
+  // the next heading — cut the body after the signature block: from the last
+  // sign-off line, keep only empty/name/contact lines and drop the rest.
+  function trimAfterSignature(body) {
+    const lines = body.split('\n');
+    let signOff = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      // blockquote letters sign off as "> Mit freundlichen Grüßen"
+      if (/^\s*(?:>\s*)*(?:kind|best|warm|with\s+)?\s*regards\b|^\s*(?:>\s*)*sincerely\b|^\s*(?:>\s*)*mit\s+freundlichen\s+grüßen|^\s*(?:>\s*)*z\s+poważaniem|^\s*(?:>\s*)*viele\s+grüße/i.test(lines[i])) {
+        signOff = i;
+        break;
+      }
+    }
+    if (signOff === -1) return body;
+    let cut = lines.length;
+    for (let i = signOff + 1; i < Math.min(signOff + 6, lines.length); i++) {
+      const l = lines[i].trim();
+      if (l === '' || /kuehn|@|\+49|linkedin|github|hamburg|germany|deutschland|poland/i.test(l)) cut = i + 1;
+      else break;
+    }
+    return lines.slice(0, cut).join('\n').trimEnd();
   }
 
   // File names start with the conversation name
@@ -621,81 +647,21 @@ app.post('/api/export-package', async (req, res) => {
   const outDir = path.join(__dirname, 'moje_dok', 'odt');
   fs.mkdirSync(outDir, { recursive: true });
 
-  // Standalone CV (regenerated outside a package): whole message is the CV.
-  // Drop the H1 name line and any chatty intro that precedes it — the
-  // document gets the package title anyway.
-  function standaloneCv(mdRaw) {
-    const md = unwrapCodeFence(mdRaw);
-    const h1 = /^.*?^#[^\n]*Kuehn[^\n]*\n/im.exec(md);
-    if (h1) {
-      return md.slice(h1.index + h1[0].length).trim();
-    }
-    return null;
-  }
+  // Standalone CV (regenerated outside a package): extractDoc starts at the
+  // "# TOMASZ KUEHN" H1, so the chatty intro before it is already dropped and
+  // no separate slicing is needed.
 
   // Remove AI-typical em dashes: "word — word" -> "word - word"
   function stripEmDashes(text) {
     return text.replace(/—/g, '-').replace(/–/g, '-');
   }
 
-  // Pick the matching section body from a message, trying the numbered form
-  // (4a./4b./4c.) first, then natural-language headings.
-  function sectionBody(md, kind) {
-    const sections = docSections(md);
-    const wantDe = kind === 'CoverLetter_DE';
-    const exact = kind === 'CV' ? /^4a\./i : (wantDe ? /^4c\./i : /^4b\./i);
-    const byExact = sections.find((s) => exact.test(s.heading));
-    if (byExact) return byExact.body;
-    const byName = sections.find((s) =>
-      kind === 'CV' ? isCvHeading(s.heading)
-        : isClHeading(s.heading) && (wantDe ? clIsDe(s.heading) : clIsEn(s.heading)));
-    if (byName) return byName.body;
-    // Fallback for combined sections like "## 4. CV (EN) i Cover Letter (EN)":
-    // the CV lives inside a numbered parent whose heading mentions it — take
-    // that parent's body up to the next SAME-LEVEL heading.
-    const wanted = kind === 'CV' ? 'CV' : 'Cover Letter';
-    const combined = sections.find((s) =>
-      new RegExp(`\\b${wanted}\\b`, 'i').test(s.heading) && /^4\./.test(s.heading));
-    if (combined) {
-      if (kind !== 'CV') return combined.body;
-      // Combined section: the CV is everything from the section start until
-      // the inner cover-letter heading (### COVER LETTER (EN) etc.).
-      const clHead = docSections(combined.body).find((s) => isClHeading(s.heading));
-      return clHead ? combined.body.slice(0, combined.body.indexOf(`### ${clHead.heading}`)).trim() : combined.body;
-    }
-    // Last resort: the CV may be the content that starts with the name H3
-    // (e.g. "### TOMASZ KUEHN") directly under a numbered section.
-    if (kind === 'CV') {
-      const kuehn = sections.find((s) => /^Kuehn\b/i.test(s.heading));
-      if (kuehn) {
-        const before = sections.slice(0, sections.indexOf(kuehn))
-          .filter((s) => /^4\./.test(s.heading));
-        if (before.length) return combinedBody(md, kuehn);
-      }
-    }
-    return null;
-  }
-
-  // From the body text of the section starting at heading h (used when we
-  // located the CV by its inner "### <name>" heading): the CV body starts at
-  // that inner heading and runs until the next same-or-higher level heading
-  // that is NOT part of the CV (inner H3s belong to the CV; an H2 or another
-  // numbered/H2 section ends it).
-  function combinedBody(md, startSection) {
-    const re = new RegExp(`^#{2,4}\\s+${startSection.heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm');
-    const m = re.exec(md);
-    if (!m) return startSection.body;
-    const start = m.index + m[0].length;
-    const rest = md.slice(start);
-    const stop = rest.search(/^##\s/m);
-    return (stop === -1 ? rest : rest.slice(0, stop)).trim();
-  }
-
-  const cvFromPkg = cvMsg ? sectionBody(mdOf(cvMsg), 'CV') : null;
+  const mdOf = (m) => (m ? m.content : '');
+  const cvFromPkg = cvMsg ? extractCv(unwrapCodeFence(mdOf(cvMsg))) : null;
   const parts = [
-    ['CV', cvFromPkg || (cvMsg ? standaloneCv(mdOf(cvMsg)) : null)],
-    ['CoverLetter_EN', clEnMsg ? sectionBody(mdOf(clEnMsg), 'CoverLetter_EN') : null],
-    ['CoverLetter_DE', clDeMsg ? sectionBody(mdOf(clDeMsg), 'CoverLetter_DE') : null],
+    ['CV', cvFromPkg],
+    ['CoverLetter_EN', clEnMsg ? trimAfterSignature(extractCl(unwrapCodeFence(mdOf(clEnMsg)), false)) : null],
+    ['CoverLetter_DE', clDeMsg ? trimAfterSignature(extractCl(unwrapCodeFence(mdOf(clDeMsg)), true)) : null],
   ];
 
   // Each generated document gets an incrementing index: _CV_1.odt,
