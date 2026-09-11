@@ -364,7 +364,7 @@
     <div class="section">
       <h2>Conversations</h2>
       <div id="convList"></div>
-      <input type="text" id="convSearch" placeholder="Search titles or message contents…" style="width:100%; margin-top:8px" />
+      <input type="text" id="convSearch" autocomplete="off" placeholder="Search titles or message contents…" style="width:100%; margin-top:8px" />
       <button class="btn secondary" id="newConvBtn" style="width:100%; margin-top:8px">+ New conversation</button>
     </div>
 
@@ -410,7 +410,7 @@
       <div class="empty">Enter a job offer description below to get started.</div>
     </div>
     <div class="input-bar">
-      <select id="modelSwitcher" class="model-switch" title="Active model"></select>
+      <select id="modelSwitcher" autocomplete="off" class="model-switch" title="Active model"></select>
       <span id="ctxSize" class="ctx-size" title="Estimated context size (system prompt + RAG files + conversation)">ctx: –</span>
       <textarea id="userInput" placeholder="Describe the job offer..."></textarea>
       <button class="btn" id="sendBtn">Send</button>
@@ -425,7 +425,7 @@
       </div>
       <div class="overlay-body" style="white-space:normal">
         <label>Name the current conversation before switching (optional)</label>
-        <input type="text" id="convNameInput" placeholder="e.g. Offer — Senior Developer" />
+        <input type="text" id="convNameInput" autocomplete="off" name="conversation-name" placeholder="e.g. Offer — Senior Developer" />
       </div>
       <div class="overlay-foot">
         <button class="btn secondary" id="nameCancel">Cancel</button>
@@ -463,15 +463,15 @@
           the conversation and fills the fields automatically.
         </div>
         <label>Match probability (interview), %</label>
-        <input type="number" id="tagPct" min="0" max="100" placeholder="e.g. 35" />
+        <input type="number" id="tagPct" autocomplete="off" min="0" max="100" placeholder="e.g. 35" />
         <label>German language</label>
-        <select id="tagGerman">
+        <select id="tagGerman" autocomplete="off">
           <option value="">— unknown / not discussed —</option>
           <option value="required">Required (job ad or assessment)</option>
           <option value="not_required">Not required</option>
         </select>
         <label>Application status</label>
-        <select id="tagStatus">
+        <select id="tagStatus" autocomplete="off">
           <option value="">— not set —</option>
           <option value="to_apply">To apply</option>
           <option value="applied">Applied (application sent)</option>
@@ -494,7 +494,7 @@
       <div class="overlay-body" style="white-space:normal">
         <div class="tag-suggest-note">The creation date and time are shown below the name on the list.</div>
         <label>New name</label>
-        <input type="text" id="renameInput" placeholder="e.g. Offer &#x2014; Senior Developer" />
+        <input type="text" id="renameInput" autocomplete="off" name="conversation-name" placeholder="e.g. Offer &#x2014; Senior Developer" />
       </div>
       <div class="overlay-foot">
         <button class="btn secondary" id="renameCancel">Cancel</button>
@@ -756,21 +756,22 @@ let streamingActive = false; // a model response is being streamed
         body.className = 'slot-body';
         if (!isOpen) body.style.display = 'none';
 
-        const mkInput = (labelText, key, placeholder, type) => {
+        const mkInput = (labelText, key, placeholder, type, attrs) => {
           const lab = document.createElement('label');
           lab.textContent = labelText;
           const inp = document.createElement('input');
           inp.type = type || 'text';
           inp.placeholder = placeholder;
           inp.value = m[key] || '';
+          if (attrs) for (const k of Object.keys(attrs)) inp.setAttribute(k, attrs[k]);
           inp.addEventListener('input', () => { m[key] = inp.value; });
           body.appendChild(lab);
           body.appendChild(inp);
         };
-        mkInput('Name', 'name', 'e.g. Fast model', 'text');
-        mkInput('Endpoint', 'endpoint', 'https://ollama.com/api/chat', 'text');
-        mkInput('API key', 'apiKey', 'sk-...', 'password');
-        mkInput('Model', 'model', 'gpt-oss:20b-cloud', 'text');
+        mkInput('Name', 'name', 'e.g. Fast model', 'text', { autocomplete: 'off' });
+        mkInput('Endpoint', 'endpoint', 'https://ollama.com/api/chat', 'text', { type: 'url', autocomplete: 'off' });
+        mkInput('API key', 'apiKey', 'sk-...', 'password', { autocomplete: 'new-password' });
+        mkInput('Model', 'model', 'gpt-oss:20b-cloud', 'text', { autocomplete: 'off' });
         slot.appendChild(body);
 
         const setActiveBtn = document.createElement('button');
