@@ -761,23 +761,11 @@ app.post('/api/export-package', async (req, res) => {
   const mdOf = (m) => (m ? m.content : '');
   const cvFromPkg = cvMsg ? extractCv(unwrapCodeFence(mdOf(cvMsg))) : null;
   const parts = [
-    ['CV', cvFromPkg],
-    ['CoverLetter_EN', clEnMsg ? trimAfterSignature(extractCl(unwrapCodeFence(mdOf(clEnMsg)), false)) : null],
-    ['CoverLetter_DE', clDeMsg ? trimAfterSignature(extractCl(unwrapCodeFence(mdOf(clDeMsg)), true)) : null],
+    ['CV', cvFromPkg, 'CV'],
+    ['CoverLetter_EN', clEnMsg ? trimAfterSignature(extractCl(unwrapCodeFence(mdOf(clEnMsg)), false)) : null, 'cover'],
+    ['CoverLetter_DE', clDeMsg ? trimAfterSignature(extractCl(unwrapCodeFence(mdOf(clDeMsg)), true)) : null, 'Anschreiben'],
   ];
-
-  // Each generated document gets an incrementing index: _CV_1.odt,
-  // _CoverLetter_EN_2.odt, ... so consecutive exports never overwrite
-  // earlier versions.
-  function nextIndex(kind) {
-    const re = new RegExp(`^${safeName}_${kind}(?:_(\\d+))?\\.odt$`);
-    let max = 0;
-    for (const f of fs.readdirSync(outDir)) {
-      const m = f.match(re);
-      if (m) max = Math.max(max, Number(m[1] || 1));
-    }
-    return max + 1;
-  }
+  const kindFile = (kind) => { for (const p of parts) if (p[0] === kind) return p[2] || kind; return kind; };
 
   // Re-exporting the SAME content must not create a new indexed version.
   // A per-conversation manifest maps each part to the content hash of its
@@ -824,7 +812,7 @@ app.post('/api/export-package', async (req, res) => {
         exported.push(manifest[kind].file);
         continue;
       }
-      const base = `${safeName}_${kind}_${nextIndex(kind)}`;
+      const base = `${safeName}_${kindFile(kind)}`;
       const mdTmp = path.join(outDir, base + '.md');
       try {
         fs.writeFileSync(mdTmp, `# ${stripEmDashes(title)}\n\n${stripEmDashes(content)}`, 'utf8');
