@@ -1215,6 +1215,11 @@ let streamingActive = false; // a model response is being streamed
     }
 
     function showNameOverlay() {
+      // If the current conversation has no messages, nothing to name — start immediately.
+      if (!messages.length) { startNewConversation(); return; }
+      // If it already has a user-set name (not the default 'Conversation'),
+      // there is nothing to ask — start the new conversation directly.
+      if (currentConvName && currentConvName !== 'Conversation' && !/^Conversation \d{1,2}\//.test(currentConvName)) { startNewConversation(); return; }
       convNameInput.value = currentConvName || '';
       nameOverlay.classList.add('show');
       setTimeout(() => { convNameInput.focus(); convNameInput.select(); }, 50);
@@ -1227,7 +1232,7 @@ let streamingActive = false; // a model response is being streamed
       if (!messages.length) return null;
       const body = {
         id: currentConvId || undefined,
-        name: currentConvName || 'Conversation ' + new Date().toLocaleString(),
+        name: currentConvName || 'Conversation',
         messages,
         selectedFiles,
         modelIndex: activeModel
@@ -1452,7 +1457,7 @@ let streamingActive = false; // a model response is being streamed
 
       // New session appears on the list immediately after the first message
       if (!currentConvId) {
-        currentConvName = currentConvName || ('Conversation ' + new Date().toLocaleString());
+        currentConvName = currentConvName || 'Conversation';
         await saveConversation();
       }
 

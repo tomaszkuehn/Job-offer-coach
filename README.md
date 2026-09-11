@@ -72,7 +72,7 @@ Click **Save configuration** (the button pulses red when there are unsaved chang
 
 ### Conversations
 
-- **+ New conversation** — asks for a name; the typed name is applied to the conversation being closed, and the new one starts with a default `Conversation` name (the creation date/time shown on the list is generated separately), keeping the RAG selection and model.
+- **+ New conversation** — asks for a name for the conversation being closed, but **only when it still carries the default `Conversation` name** (already-renamed conversations are skipped and the new one starts immediately). The new one starts with the default `Conversation` name (the creation date/time shown on the list is generated separately), keeping the RAG selection and model.
 - Clicking a name in the list **restores** the conversation together with its RAG files. The browsed conversation stays in place on the list and is highlighted in green.
 - The list is **scrollable** (fixed height) and has a **search box**: matching
   covers conversation **titles** and **message contents** — body matches show
