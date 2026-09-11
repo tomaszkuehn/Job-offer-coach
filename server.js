@@ -445,7 +445,8 @@ app.post('/api/conversations', (req, res) => {
     updatedAt,
     messages,
     selectedFiles: keptFiles,
-    modelIndex: (modelIndex !== undefined ? modelIndex : null)
+    modelIndex: (modelIndex !== undefined ? modelIndex : null),
+    tags: (prev && prev.tags) ? prev.tags : { matchPct: null, german: null, notApplying: false }
   };
   fs.writeFileSync(path.join(convDir, 'conversation.json'), JSON.stringify(conv, null, 2));
 
@@ -454,13 +455,102 @@ app.post('/api/conversations', (req, res) => {
     name,
     createdAt,
     updatedAt,
-    messageCount: messages.length
+    messageCount: messages.length,
+    tags: conv.tags
   };
   const filtered = index.filter((c) => c.id !== convId);
   filtered.unshift(entry); // updated/created conversation jumps to the top
   saveConversationsIndex(filtered);
 
   res.json({ ok: true, id: convId, updatedAt, updated: changed });
+});
+
+// ---- Conversation tags (match %, German requirement, not-applying) ----
+// Tags live on the conversation object AND on the index entry (so the list
+// can render badges without loading every conversation).
+
+function analyzeConversationTags(conv) {
+  const assistantTexts = (conv.messages || [])
+    .filter((m) => m.role === 'assistant')
+    .map((m) => String(m.content || ''));
+  // Newest-first: the latest assessment reflects the current state.
+  const allTexts = [...assistantTexts].reverse();
+  const joined = allTexts.join('\n');
+
+  const tags = { matchPct: null, german: null, notApplying: false };
+
+  // Match %: first message (newest first) that states an interview chance.
+  for (const text of allTexts) {
+    const m = text.match(/(?:interview|rozmow[ęe]|screening)[^\n%]{0,80}?(\d{1,3})\s*%/i)
+      || text.match(/(?:szans[ęey][^\n%]{0,60}?(?:interview|rozmow))[^\n%]{0,40}?(\d{1,3})\s*%/i);
+    if (m) {
+      const pct = parseInt(m[1], 10);
+      if (pct >= 0 && pct <= 100) { tags.matchPct = pct; break; }
+    }
+  }
+
+  // German: not required > required (explicit statements win over generic
+  // "chances with German B1" analysis, which appears in most sessions).
+  if (/niemiecki\s+nie\s+jest\s+wymagan|German\s+not\s+required|kein\s+Deutsch|nie\s+jest\s+wymagan[^.\n]{0,30}niemieck/i.test(joined)) {
+    tags.german = 'not_required';
+  } else if (/niemieck\w*[^\n]{0,40}(?:wymagan|B1|B2|C1|erforderlich)|Deutsch(?:kenntnisse)?[^\n]{0,30}(?:erforderlich|wymagan)|Bewerbung[^\n]{0,20}Deutsch/i.test(joined)) {
+    tags.german = 'required';
+  }
+
+  if (/nie\s+aplikuj|nie\s+warto\s+aplikowa|odradzam\s+aplikow|long\s+shot/i.test(joined)) {
+    tags.notApplying = true;
+  }
+
+  return tags;
+}
+
+function normalizeTagsInput(body) {
+  const out = {};
+  if (body.matchPct === null || body.matchPct === '') out.matchPct = null;
+  else if (body.matchPct !== undefined) {
+    const pct = parseInt(body.matchPct, 10);
+    if (isNaN(pct) || pct < 0 || pct > 100) return null;
+    out.matchPct = pct;
+  }
+  if (body.german !== undefined) {
+    if (body.german === null || body.german === '') out.german = null;
+    else if (['required', 'not_required'].includes(body.german)) out.german = body.german;
+    else return null;
+  }
+  if (body.notApplying !== undefined) out.notApplying = !!body.notApplying;
+  return out;
+}
+
+app.post('/api/conversations/:id/tags', (req, res) => {
+  const id = req.params.id;
+  const conv = loadConversation(id);
+  if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+
+  const patch = normalizeTagsInput(req.body);
+  if (!patch) return res.status(400).json({ error: 'Invalid tags payload' });
+
+  const tags = {
+    matchPct: patch.matchPct !== undefined ? patch.matchPct : (conv.tags && conv.tags.matchPct !== undefined ? conv.tags.matchPct : null),
+    german: patch.german !== undefined ? patch.german : (conv.tags && conv.tags.german !== undefined ? conv.tags.german : null),
+    notApplying: patch.notApplying !== undefined ? patch.notApplying : !!(conv.tags && conv.tags.notApplying),
+    manual: true
+  };
+  conv.tags = tags;
+  fs.writeFileSync(path.join(CONVERSATIONS_DIR, id, 'conversation.json'), JSON.stringify(conv, null, 2));
+
+  const index = loadConversationsIndex();
+  const entry = index.find((c) => c.id === id);
+  if (entry) {
+    entry.tags = tags;
+    saveConversationsIndex(index);
+  }
+  res.json({ ok: true, tags });
+});
+
+app.post('/api/conversations/:id/tags/analyze', (req, res) => {
+  const conv = loadConversation(req.params.id);
+  if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+  res.json({ ok: true, suggested: analyzeConversationTags(conv) });
 });
 
 app.post('/api/conversations/:id/rename', (req, res) => {

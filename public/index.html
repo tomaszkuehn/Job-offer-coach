@@ -32,6 +32,25 @@
       display: block; font-size: 10px; color: #2563eb; margin: 0;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
+    .conv-tags { display: flex; gap: 4px; margin-top: 2px; flex-wrap: wrap; }
+    .conv-tag {
+      font-size: 9px; padding: 1px 6px; border-radius: 8px;
+      border: 1px solid #d4dae0; background: #f5f7f9; color: #52606d;
+      white-space: nowrap; line-height: 1.4;
+    }
+    .conv-tags .pct { color: #1e7e34; border-color: #b7dfc2; background: #f0faf2; }
+    .conv-tags .pct-low { color: #a12b2b; border-color: #efc4c4; background: #fdf3f3; }
+    .conv-tags .de { color: #0b6a8f; border-color: #bfe0ec; background: #eff8fc; }
+    .conv-tags .na { color: #a12b2b; border-color: #efc4c4; background: #fdf3f3; }
+    .tag-btn {
+      border: none; background: none; cursor: pointer; font-size: 12px;
+      color: #9aa5b1; padding: 2px 4px; flex-shrink: 0;
+    }
+    .tag-btn:hover { color: #52606d; }
+    #tagOverlay textarea, #tagOverlay select, #tagOverlay input {
+      width: 100%; box-sizing: border-box; margin-bottom: 10px;
+    }
+    .tag-suggest-note { font-size: 11px; color: #7b8794; margin-bottom: 8px; }
     .section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: #52606d; margin-bottom: 10px; }
     .section-toggle {
       display: flex; align-items: center; justify-content: space-between;
@@ -387,6 +406,37 @@
       <div class="overlay-foot">
         <button class="btn secondary" id="overlayCancel">Cancel</button>
         <button class="btn" id="overlaySend">Send to model</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay" id="tagOverlay">
+    <div class="overlay-box" style="max-width:420px">
+      <div class="overlay-head">
+        <div><h2>Conversation tags</h2><div class="meta" id="tagConvName"></div></div>
+        <button class="btn secondary" id="tagClose">✕</button>
+      </div>
+      <div class="overlay-body" style="white-space:normal">
+        <div class="tag-suggest-note">
+          Optional labels shown on the conversation list. <b>Suggest</b> scans
+          the conversation and fills the fields automatically.
+        </div>
+        <label>Match probability (interview), %</label>
+        <input type="number" id="tagPct" min="0" max="100" placeholder="e.g. 35" />
+        <label>German language</label>
+        <select id="tagGerman">
+          <option value="">— unknown / not discussed —</option>
+          <option value="required">Required (job ad or assessment)</option>
+          <option value="not_required">Not required</option>
+        </select>
+        <label style="display:flex; align-items:center; gap:6px; margin-bottom:10px">
+          <input type="checkbox" id="tagNotApplying" style="width:auto" />
+          Not applying (skipping this offer)
+        </label>
+      </div>
+      <div class="overlay-foot">
+        <button class="btn secondary" id="tagSuggest">Suggest from content</button>
+        <button class="btn" id="tagSave">Save tags</button>
       </div>
     </div>
   </div>
@@ -845,8 +895,109 @@ let streamingActive = false; // a model response is being streamed
         item.appendChild(rename);
         item.appendChild(del);
         convListEl.appendChild(item);
+
+        // Tag badges + editor button
+        const tagsRow = document.createElement('div');
+        tagsRow.className = 'conv-tags';
+        const t = c.tags || {};
+        if (t.matchPct !== null && t.matchPct !== undefined) {
+          const b = document.createElement('span');
+          b.className = 'conv-tag ' + (t.matchPct < 30 ? 'pct-low' : 'pct');
+          b.textContent = t.matchPct + '%';
+          tagsRow.appendChild(b);
+        }
+        if (t.german === 'required') {
+          const b = document.createElement('span');
+          b.className = 'conv-tag de';
+          b.textContent = 'DE required';
+          b.title = 'German language required';
+          tagsRow.appendChild(b);
+        } else if (t.german === 'not_required') {
+          const b = document.createElement('span');
+          b.className = 'conv-tag';
+          b.textContent = 'no DE';
+          b.title = 'German not required';
+          tagsRow.appendChild(b);
+        }
+        if (t.notApplying) {
+          const b = document.createElement('span');
+          b.className = 'conv-tag na';
+          b.textContent = 'not applying';
+          tagsRow.appendChild(b);
+        }
+        const tagEdit = document.createElement('button');
+        tagEdit.className = 'tag-btn';
+        tagEdit.textContent = '🏷';
+        tagEdit.title = 'Edit tags';
+        tagEdit.addEventListener('click', (e) => { e.stopPropagation(); openTagEditor(c); });
+        item.appendChild(tagEdit);
+        if (tagsRow.children.length) {
+          label.appendChild(tagsRow);
+        }
       });
     }
+
+    // ---- Tag editor ----
+    const tagOverlay = document.getElementById('tagOverlay');
+    const tagConvName = document.getElementById('tagConvName');
+    const tagPctEl = document.getElementById('tagPct');
+    const tagGermanEl = document.getElementById('tagGerman');
+    const tagNotApplyingEl = document.getElementById('tagNotApplying');
+    let tagEditingId = null;
+
+    function openTagEditor(c) {
+      tagEditingId = c.id;
+      tagConvName.textContent = c.name;
+      const t = c.tags || {};
+      tagPctEl.value = (t.matchPct !== null && t.matchPct !== undefined) ? t.matchPct : '';
+      tagGermanEl.value = t.german || '';
+      tagNotApplying.checked = !!t.notApplying;
+      tagOverlay.classList.add('show');
+    }
+    function closeTagEditor() {
+      tagOverlay.classList.remove('show');
+      tagEditingId = null;
+    }
+    document.getElementById('tagClose').addEventListener('click', closeTagEditor);
+    document.getElementById('tagSuggest').addEventListener('click', async () => {
+      if (!tagEditingId) return;
+      const btn = document.getElementById('tagSuggest');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/conversations/' + tagEditingId + '/tags/analyze', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok && data.suggested) {
+          const s = data.suggested;
+          if (s.matchPct !== null && s.matchPct !== undefined) tagPctEl.value = s.matchPct;
+          if (s.german) tagGermanEl.value = s.german;
+          tagNotApplying.checked = !!s.notApplying;
+        }
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    document.getElementById('tagSave').addEventListener('click', async () => {
+      if (!tagEditingId) return;
+      const pctRaw = tagPctEl.value.trim();
+      const body = {
+        matchPct: pctRaw === '' ? null : parseInt(pctRaw, 10),
+        german: tagGermanEl.value || null,
+        notApplying: tagNotApplying.checked
+      };
+      const res = await fetch('/api/conversations/' + tagEditingId + '/tags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (res.ok) {
+        closeTagEditor();
+        await loadConversations(convSearchEl.value);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        alert('Failed to save tags: ' + (data.error || res.status));
+      }
+    });
+    tagOverlay.addEventListener('click', (e) => { if (e.target === tagOverlay) closeTagEditor(); });
 
     function formatConvTime(iso) {
       if (!iso) return '';
