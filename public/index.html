@@ -7,6 +7,10 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='18' fill='%232563eb'/%3E%3Ctext x='50' y='60' font-size='54' text-anchor='middle' dominant-baseline='middle' font-family='Segoe UI Emoji,Apple Color Emoji,Noto Color Emoji,sans-serif'%3E%F0%9F%92%BC%3C/text%3E%3C/svg%3E" />
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    @media (min-width: 1601px) {
+      body { max-width: 1600px; margin: 0 auto; }
+      html { background: #e4e7eb; }
+    }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background: #f4f5f7;
@@ -40,8 +44,10 @@
     }
     .conv-tags .pct { color: #1e7e34; border-color: #b7dfc2; background: #f0faf2; }
     .conv-tags .pct-low { color: #a12b2b; border-color: #efc4c4; background: #fdf3f3; }
-    .conv-tags .de { color: #0b6a8f; border-color: #bfe0ec; background: #eff8fc; }
+    .conv-tags .de { color: #8a6100; border-color: #e8d18a; background: #fdf8e2; }
     .conv-tags .na { color: #a12b2b; border-color: #efc4c4; background: #fdf3f3; }
+.conv-tags .ap { color: #1e7e34; border-color: #b7dfc2; background: #f0faf2; }
+.conv-tags .ta { color: #6d28d9; border-color: #ddd6fe; background: #f5f3ff; }
     .tag-btn {
       border: none; background: none; cursor: pointer; font-size: 12px;
       color: #9aa5b1; padding: 2px 4px; flex-shrink: 0;
@@ -131,8 +137,9 @@
       flex-direction: column;
       gap: 16px;
     }
-    .msg { max-width: 75%; padding: 12px 16px; border-radius: 12px; font-size: 14px; line-height: 1.5; word-wrap: break-word; overflow-wrap: break-word; }
+    .msg { max-width: 85%; padding: 12px 16px; border-radius: 12px; font-size: 14px; line-height: 1.5; word-wrap: break-word; overflow-wrap: break-word; }
     .msg.user, .msg.error { white-space: pre-wrap; }
+    .msg.user { align-self: flex-start; margin-left: 32px; background: #2563eb; color: #fff; }
     .msg.assistant { align-self: flex-start; background: #fff; border: 1px solid #e4e7eb; }
     .msg.assistant > .md > *:first-child { margin-top: 0; }
     .msg.assistant > .md > *:last-child { margin-bottom: 0; }
@@ -164,7 +171,6 @@
     .msg.assistant .md th { background: #f6f8fa; }
     .msg.assistant .md a { color: #2563eb; }
     .msg.assistant .md hr { border: none; border-top: 1px solid #e4e7eb; margin: 10px 0; }
-    .msg.user { align-self: flex-end; background: #2563eb; color: #fff; }
     .msg.error { align-self: flex-start; background: #fdecea; color: #a12b2b; border: 1px solid #f5c6c6; }
     .input-bar {
       display: flex;
@@ -312,6 +318,35 @@
     }
     .ctx-size.warn { background: #fef3e2; color: #b25e09; border-color: #f3d0a4; }
     .ctx-size.danger { background: #fdecea; color: #a12b2b; border-color: #f5c6c6; }
+
+    /* Narrow-window responsiveness: keep the conversations section usable */
+    @media (max-width: 1100px) {
+      .sidebar { width: 300px; padding: 16px; }
+      .chat { padding: 16px; }
+      .input-bar { padding: 12px 16px; }
+      .msg { max-width: 88%; }
+    }
+    @media (max-width: 900px) {
+      body { flex-direction: column; }
+      .sidebar {
+        width: 100%;
+        border-right: none;
+        border-bottom: 1px solid #e4e7eb;
+        overflow-y: visible;
+        max-height: none;
+      }
+      .sidebar .sub { margin-bottom: 12px; }
+      .section { margin-bottom: 16px; }
+      #convList { max-height: 240px; }
+      .chat { padding: 12px; }
+      .input-bar { padding: 10px 12px; }
+      .msg { max-width: 95%; }
+    }
+    @media (max-width: 600px) {
+      .input-bar { flex-wrap: wrap; }
+      #userInput { order: 3; width: 100%; flex-basis: 100%; }
+      #modelSwitcher { flex: 1; }
+    }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
 </head>
@@ -429,14 +464,35 @@
           <option value="required">Required (job ad or assessment)</option>
           <option value="not_required">Not required</option>
         </select>
-        <label style="display:flex; align-items:center; gap:6px; margin-bottom:10px">
-          <input type="checkbox" id="tagNotApplying" style="width:auto" />
-          Not applying (skipping this offer)
-        </label>
+        <label>Application status</label>
+        <select id="tagStatus">
+          <option value="">— not set —</option>
+          <option value="to_apply">To apply</option>
+          <option value="applied">Applied (application sent)</option>
+          <option value="not_applying">Not applying (skipping this offer)</option>
+        </select>
       </div>
       <div class="overlay-foot">
         <button class="btn secondary" id="tagSuggest">Suggest from content</button>
         <button class="btn" id="tagSave">Save tags</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay" id="renameOverlay">
+    <div class="overlay-box" style="max-width:420px">
+      <div class="overlay-head">
+        <div><h2>Rename conversation</h2><div class="meta" id="renameOldName"></div></div>
+        <button class="btn secondary" id="renameClose">&#x2715;</button>
+      </div>
+      <div class="overlay-body" style="white-space:normal">
+        <div class="tag-suggest-note">The creation date and time are shown below the name on the list.</div>
+        <label>New name</label>
+        <input type="text" id="renameInput" placeholder="e.g. Offer &#x2014; Senior Developer" />
+      </div>
+      <div class="overlay-foot">
+        <button class="btn secondary" id="renameCancel">Cancel</button>
+        <button class="btn" id="renameConfirm">Rename</button>
       </div>
     </div>
   </div>
@@ -844,7 +900,7 @@ let streamingActive = false; // a model response is being streamed
         const time = document.createElement('span');
         time.className = 'time';
         time.style.cssText = 'display:block; font-size:10px; color:#9aa5b1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap';
-        time.textContent = formatConvTime(c.updatedAt || c.createdAt);
+        time.textContent = formatConvTime(c.createdAt);
         wrap.appendChild(span);
         wrap.appendChild(time);
         if (c.matchType === 'body' && c.snippet) {
@@ -861,19 +917,7 @@ let streamingActive = false; // a model response is being streamed
         rename.title = 'Rename conversation';
         rename.addEventListener('click', async (e) => {
           e.stopPropagation();
-          const newName = prompt('New name:', c.name);
-          if (newName === null) return;
-          const trimmed = newName.trim();
-          if (!trimmed || trimmed === c.name) return;
-          const res = await fetch('/api/conversations/' + c.id + '/rename', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: trimmed })
-          });
-          if (res.ok) {
-            if (currentConvId === c.id) currentConvName = trimmed;
-            await loadConversations();
-          }
+          openRenameDialog(c);
         });
         const del = document.createElement('button');
         del.className = 'del';
@@ -894,9 +938,9 @@ let streamingActive = false; // a model response is being streamed
         item.appendChild(label);
         item.appendChild(rename);
         item.appendChild(del);
-        convListEl.appendChild(item);
 
-        // Tag badges + editor button
+        // Tag badges render as an extra line under name/time (inside `wrap`,
+        // a vertical block) so they never compete with the name for width.
         const tagsRow = document.createElement('div');
         tagsRow.className = 'conv-tags';
         const t = c.tags || {};
@@ -919,21 +963,36 @@ let streamingActive = false; // a model response is being streamed
           b.title = 'German not required';
           tagsRow.appendChild(b);
         }
-        if (t.notApplying) {
+        const st = t.status || (t.applied ? 'applied' : (t.notApplying ? 'not_applying' : null));
+        if (st === 'applied') {
+          const b = document.createElement('span');
+          b.className = 'conv-tag ap';
+          b.textContent = 'applied';
+          b.title = 'Application sent';
+          tagsRow.appendChild(b);
+        } else if (st === 'not_applying') {
           const b = document.createElement('span');
           b.className = 'conv-tag na';
           b.textContent = 'not applying';
+          b.title = 'Not applying';
+          tagsRow.appendChild(b);
+        } else if (st === 'to_apply') {
+          const b = document.createElement('span');
+          b.className = 'conv-tag ta';
+          b.textContent = 'to apply';
+          b.title = 'Planned to apply';
           tagsRow.appendChild(b);
         }
         const tagEdit = document.createElement('button');
         tagEdit.className = 'tag-btn';
-        tagEdit.textContent = '🏷';
+        tagEdit.textContent = '🏛';
         tagEdit.title = 'Edit tags';
         tagEdit.addEventListener('click', (e) => { e.stopPropagation(); openTagEditor(c); });
         item.appendChild(tagEdit);
         if (tagsRow.children.length) {
-          label.appendChild(tagsRow);
+          wrap.appendChild(tagsRow);
         }
+        convListEl.appendChild(item);
       });
     }
 
@@ -942,7 +1001,7 @@ let streamingActive = false; // a model response is being streamed
     const tagConvName = document.getElementById('tagConvName');
     const tagPctEl = document.getElementById('tagPct');
     const tagGermanEl = document.getElementById('tagGerman');
-    const tagNotApplyingEl = document.getElementById('tagNotApplying');
+    const tagStatusEl = document.getElementById('tagStatus');
     let tagEditingId = null;
 
     function openTagEditor(c) {
@@ -951,13 +1010,63 @@ let streamingActive = false; // a model response is being streamed
       const t = c.tags || {};
       tagPctEl.value = (t.matchPct !== null && t.matchPct !== undefined) ? t.matchPct : '';
       tagGermanEl.value = t.german || '';
-      tagNotApplying.checked = !!t.notApplying;
+      tagStatusEl.value = t.status || (t.applied ? 'applied' : (t.notApplying ? 'not_applying' : ''));
       tagOverlay.classList.add('show');
     }
     function closeTagEditor() {
       tagOverlay.classList.remove('show');
       tagEditingId = null;
     }
+
+    // ---- Rename dialog ----
+    const renameOverlay = document.getElementById('renameOverlay');
+    const renameInput = document.getElementById('renameInput');
+    const renameOldName = document.getElementById('renameOldName');
+    let renameId = null;
+    let renameTimePart = '';
+
+    function openRenameDialog(c) {
+      renameId = c.id;
+      // Date/time suffix is not part of the editable name.
+      const m = c.name.match(/^(.*?)(\d{1,2}\/\d{1,2}\/\d{4}, \d{1,2}:\d{2}(?::\d{2})? (?:AM|PM))$/);
+      renameTimePart = m ? m[0].slice(m[1].length) : '';
+      const shown = renameTimePart ? c.name.slice(0, c.name.length - renameTimePart.length).replace(/\s+$/, '').replace(/\s*Conversation$/, '') : c.name;
+      renameOldName.textContent = c.name;
+      renameInput.value = shown;
+      renameOverlay.classList.add('show');
+      setTimeout(() => { renameInput.focus(); renameInput.select(); }, 30);
+    }
+    function closeRenameDialog() {
+      renameOverlay.classList.remove('show');
+      renameId = null;
+      renameTimePart = '';
+    }
+    async function confirmRename() {
+      if (!renameId) return;
+      const val = renameInput.value.trim();
+      if (!val) return;
+      let name = val;
+      const res = await fetch('/api/conversations/' + renameId + '/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
+      if (res.ok) {
+        if (currentConvId === renameId) currentConvName = name;
+        closeRenameDialog();
+        await loadConversations();
+      }
+    }
+    document.getElementById('renameClose').addEventListener('click', closeRenameDialog);
+    document.getElementById('renameCancel').addEventListener('click', closeRenameDialog);
+    document.getElementById('renameConfirm').addEventListener('click', confirmRename);
+    renameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); confirmRename(); }
+      if (e.key === 'Escape') closeRenameDialog();
+    });
+    renameOverlay.addEventListener('click', (e) => {
+      if (e.target === renameOverlay) closeRenameDialog();
+    });
     document.getElementById('tagClose').addEventListener('click', closeTagEditor);
     document.getElementById('tagSuggest').addEventListener('click', async () => {
       if (!tagEditingId) return;
@@ -970,7 +1079,7 @@ let streamingActive = false; // a model response is being streamed
           const s = data.suggested;
           if (s.matchPct !== null && s.matchPct !== undefined) tagPctEl.value = s.matchPct;
           if (s.german) tagGermanEl.value = s.german;
-          tagNotApplying.checked = !!s.notApplying;
+          tagStatusEl.value = s.status || '';
         }
       } finally {
         btn.disabled = false;
@@ -982,7 +1091,7 @@ let streamingActive = false; // a model response is being streamed
       const body = {
         matchPct: pctRaw === '' ? null : parseInt(pctRaw, 10),
         german: tagGermanEl.value || null,
-        notApplying: tagNotApplying.checked
+        status: tagStatusEl.value || null
       };
       const res = await fetch('/api/conversations/' + tagEditingId + '/tags', {
         method: 'POST',
@@ -1003,11 +1112,8 @@ let streamingActive = false; // a model response is being streamed
       if (!iso) return '';
       const d = new Date(iso);
       if (isNaN(d)) return '';
-      const now = new Date();
-      const sameDay = d.toDateString() === now.toDateString();
-      if (sameDay) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       return d.toLocaleString([], {
-        day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+        day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
       });
     }
 

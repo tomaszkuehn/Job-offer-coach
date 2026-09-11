@@ -446,7 +446,7 @@ app.post('/api/conversations', (req, res) => {
     messages,
     selectedFiles: keptFiles,
     modelIndex: (modelIndex !== undefined ? modelIndex : null),
-    tags: (prev && prev.tags) ? prev.tags : { matchPct: null, german: null, notApplying: false }
+    tags: (prev && prev.tags) ? prev.tags : { matchPct: null, german: null, status: null }
   };
   fs.writeFileSync(path.join(convDir, 'conversation.json'), JSON.stringify(conv, null, 2));
 
@@ -477,7 +477,7 @@ function analyzeConversationTags(conv) {
   const allTexts = [...assistantTexts].reverse();
   const joined = allTexts.join('\n');
 
-  const tags = { matchPct: null, german: null, notApplying: false };
+  const tags = { matchPct: null, german: null, status: null };
 
   // Match %: first message (newest first) that states an interview chance.
   for (const text of allTexts) {
@@ -498,9 +498,13 @@ function analyzeConversationTags(conv) {
   }
 
   if (/nie\s+aplikuj|nie\s+warto\s+aplikowa|odradzam\s+aplikow|long\s+shot/i.test(joined)) {
-    tags.notApplying = true;
+    tags.status = 'not_applying';
   }
 
+  // Applied: explicit statements that an application was sent.
+  if (/(?:wys[\wa\u0142]{0,7}\s+aplikacj)|(?:za)?aplikowa[\wa\u0142]{0,4}\s+(?:juz|na\s+ta|na\s+to)|(?:sent|submitted)\s+(?:my|the)\s+application|applied\s+(?:already|today|yesterday|via|on|through)/i.test(joined)) {
+    if (tags.status !== 'not_applying') tags.status = 'applied';
+  }
   return tags;
 }
 
@@ -517,7 +521,15 @@ function normalizeTagsInput(body) {
     else if (['required', 'not_required'].includes(body.german)) out.german = body.german;
     else return null;
   }
-  if (body.notApplying !== undefined) out.notApplying = !!body.notApplying;
+  const STATUS_VALUES = ['to_apply', 'applied', 'not_applying'];
+  if (body.status !== undefined) {
+    if (body.status === null || body.status === '') out.status = null;
+    else if (STATUS_VALUES.includes(body.status)) out.status = body.status;
+    else return null;
+  } else if (body.applied !== undefined && body.notApplying !== undefined) {
+    // legacy boolean payload
+    out.status = body.applied ? 'applied' : (body.notApplying ? 'not_applying' : null);
+  }
   return out;
 }
 
@@ -532,7 +544,7 @@ app.post('/api/conversations/:id/tags', (req, res) => {
   const tags = {
     matchPct: patch.matchPct !== undefined ? patch.matchPct : (conv.tags && conv.tags.matchPct !== undefined ? conv.tags.matchPct : null),
     german: patch.german !== undefined ? patch.german : (conv.tags && conv.tags.german !== undefined ? conv.tags.german : null),
-    notApplying: patch.notApplying !== undefined ? patch.notApplying : !!(conv.tags && conv.tags.notApplying),
+    status: patch.status !== undefined ? patch.status : (conv.tags ? (conv.tags.status !== undefined ? conv.tags.status : (conv.tags.applied ? 'applied' : (conv.tags.notApplying ? 'not_applying' : null))) : null),
     manual: true
   };
   conv.tags = tags;

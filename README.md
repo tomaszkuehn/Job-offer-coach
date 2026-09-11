@@ -72,18 +72,23 @@ Click **Save configuration** (the button pulses red when there are unsaved chang
 
 ### Conversations
 
-- **+ New conversation** — asks for a name; the typed name is applied to the conversation being closed, and the new one starts with a default timestamped name, keeping the RAG selection and model.
+- **+ New conversation** — asks for a name; the typed name is applied to the conversation being closed, and the new one starts with a default `Conversation` name (the creation date/time shown on the list is generated separately), keeping the RAG selection and model.
 - Clicking a name in the list **restores** the conversation together with its RAG files. The browsed conversation stays in place on the list and is highlighted in green.
 - The list is **scrollable** (fixed height) and has a **search box**: matching
   covers conversation **titles** and **message contents** — body matches show
   a snippet under the name. **Esc** clears the search.
-- **✎** renames, **✕** deletes a conversation.
+- **✎** renames, **✕** deletes a conversation. Renaming opens an in-app dialog:
+  you edit only the name — the creation date and time shown below the name on
+  the list are managed by the app and are never part of the editable name.
+  Each list entry displays the conversation's **creation date and time**
+  (`dd/mm/yyyy, hh:mm`) under the name.
 - **🏷 tags** — each conversation can carry optional tags shown as badges on
   the list: **match probability** (interview chance, %), **German requirement**
-  (`DE required` / `no DE`), and **not applying**. Open the tag editor with the
-  🏷 button and either fill the fields manually or press **Suggest from
-  content** — the server scans the conversation for the newest interview-chance
-  percentage, German requirement statements, and "don't apply" verdicts.
+(`DE required` / `no DE`), and the application status (**to apply** /
+**applied** / **not applying**). Open the tag editor with the 🏷 button and
+either fill the fields manually or press **Suggest from content** — the server
+scans the conversation for the newest interview-chance percentage, German
+requirement statements, and "applied" / "don't apply" verdicts.
 - While a model response is **streaming**, switching conversations (or starting a new one) asks for confirmation — the in-flight reply would be lost.
 - The **preview overlay** is keyboard-driven: **Enter** sends, **Esc** cancels.
 
@@ -155,7 +160,7 @@ on PATH).
 | GET | `/api/conversations/:id` | Get a conversation (read-only; does not touch global config) |
 | POST | `/api/conversations` | Create or update a conversation (`id` optional); bumps `updatedAt` only when content changes |
 | POST | `/api/conversations/:id/rename` | Rename a conversation |
-| POST | `/api/conversations/:id/tags` | Set conversation tags (`{ matchPct, german, notApplying }`; `matchPct` 0–100 or `null`, `german` = `required` / `not_required` / `null`) |
+| POST | `/api/conversations/:id/tags` | Set conversation tags (`{ matchPct, german, status }`; `matchPct` 0–100 or `null`, `german` = `required` / `not_required` / `null`, `status` = `to_apply` / `applied` / `not_applying` / `null`) |
 | POST | `/api/conversations/:id/tags/analyze` | Suggest tags from conversation content (does not save) |
 | DELETE | `/api/conversations/:id` | Delete a conversation |
 | POST | `/api/export-package` | Extract CV + cover letters from the latest package in a conversation and convert them to ODT (`{ conversationId }`); returns `207` with a `failed` list on partial success |
