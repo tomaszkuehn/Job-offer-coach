@@ -46,7 +46,10 @@ function slug(s) {
 function toOdt(md, outFile) {
   const tmp = path.join(OUT_DIR, path.basename(outFile) + '.md');
   fs.writeFileSync(tmp, md, 'utf8');
-  execFileSync(PANDOC, [tmp, '--from=gfm', '-o', path.join(OUT_DIR, outFile)], { stdio: 'inherit' });
+  const refDoc = path.join(__dirname, 'reference-calibri.odt');
+  const args = [tmp, '--from=gfm'];
+  if (fs.existsSync(refDoc)) args.push(`--reference-doc=${refDoc}`);
+  execFileSync(PANDOC, [...args, '-o', path.join(OUT_DIR, outFile)], { stdio: 'inherit' });
   fs.unlinkSync(tmp);
 }
 

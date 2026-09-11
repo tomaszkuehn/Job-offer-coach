@@ -106,8 +106,8 @@ on PATH).
   suggests closing the file and re-exporting.
 - Output goes to `moje_dok/odt/` ("moje dokumenty" = *my documents* — Polish
   folder name kept for local continuity); styling comes from a bundled reference
-  document (`tools/reference-liberation.odt`): Liberation Sans/Serif fonts,
-  10.5 pt base size, compact paragraph spacing, table borders (pandoc emits
+  document (`tools/reference-calibri.odt`): Calibri body font with Calibri Light
+  headings, 10.5 pt base size, compact paragraph spacing, table borders (pandoc emits
   borderless tables — the server patches them in), single-line horizontal
   rules, **no page numbers** (empty footer), and `—`/`–` converted to plain `-`.
 
@@ -119,7 +119,7 @@ on PATH).
 ├── package.json
 ├── tools/
 │   ├── extract-package.js         # CLI version of the package export (pandoc)
-│   └── reference-liberation.odt   # Pandoc reference doc: fonts, sizes, spacing, HR style
+│   └── reference-calibri.odt      # Pandoc reference doc: Calibri fonts, sizes, spacing, HR style
 ├── public/
 │   └── index.html                 # Frontend (single file: config panel + chat UI)
 ├── moje_dok/                      # Local output ("my documents", git-ignored)

@@ -728,7 +728,7 @@ app.post('/api/export-package', async (req, res) => {
         fs.writeFileSync(mdTmp, `# ${stripEmDashes(title)}\n\n${stripEmDashes(content)}`, 'utf8');
         tmpFiles.push(mdTmp);
         const odt = path.join(outDir, base + '.odt');
-        const refDoc = path.join(__dirname, 'tools', 'reference-liberation.odt');
+        const refDoc = path.join(__dirname, 'tools', 'reference-calibri.odt');
         const args = [mdTmp, '--from=gfm'];
         if (fs.existsSync(refDoc)) args.push(`--reference-doc=${refDoc}`);
         args.push('-o', odt);
@@ -753,7 +753,7 @@ app.post('/api/export-package', async (req, res) => {
         try {
           fs.writeFileSync(mdAlt, `# ${stripEmDashes(title)}\n\n${stripEmDashes(content)}`, 'utf8');
           tmpFiles.push(mdAlt);
-          const refDoc = path.join(__dirname, 'tools', 'reference-liberation.odt');
+          const refDoc = path.join(__dirname, 'tools', 'reference-calibri.odt');
           const args = [mdAlt, '--from=gfm'];
           if (fs.existsSync(refDoc)) args.push(`--reference-doc=${refDoc}`);
           args.push('-o', odtAlt);
