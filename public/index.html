@@ -1221,7 +1221,12 @@ let streamingActive = false; // a model response is being streamed
       if (!messages.length) { startNewConversation(); return; }
       // If it already has a user-set name (not the default 'Conversation'),
       // there is nothing to ask — start the new conversation directly.
-      if (currentConvName && currentConvName !== 'Conversation' && !/^Conversation \d{1,2}\//.test(currentConvName)) { startNewConversation(); return; }
+      // The stale input value MUST NOT be applied to the current conversation.
+      if (currentConvName && currentConvName !== 'Conversation' && !/^Conversation \d{1,2}\//.test(currentConvName)) {
+        convNameInput.value = '';
+        startNewConversation(true);
+        return;
+      }
       convNameInput.value = currentConvName || '';
       nameOverlay.classList.add('show');
       setTimeout(() => { convNameInput.focus(); convNameInput.select(); }, 50);
@@ -1270,8 +1275,8 @@ let streamingActive = false; // a model response is being streamed
       };
     }
 
-    async function startNewConversation() {
-      const name = convNameInput.value.trim();
+    async function startNewConversation(keepName) {
+      const name = keepName ? '' : convNameInput.value.trim();
       hideNameOverlay();
 
       if (messages.length) {
