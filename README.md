@@ -106,11 +106,12 @@ on PATH).
 - Each part is taken from the **latest** assistant message containing it —
   a full package, a partial package update, or a standalone CV regeneration
   all count, so the newest version always wins.
-- **Indexed file names**: every export creates new files, never overwrites:
-  `<conversation>_CV_1.odt`, `..._CV_2.odt`, `..._CoverLetter_EN_3.odt`, …
+- **File names** follow `<conversation>_<CV | cover | Anschreiben>.odt` —
+  e.g. `RWE_CV.odt`, `RWE_cover.odt` (English letter), `RWE_Anschreiben.odt`
+  (German letter).
   Re-exporting **unchanged** content reuses the existing file (content-hash
-  manifest keyed by conversation ID — stable across renames) instead of
-  bumping the index. Export always reads **only the current conversation**.
+  manifest keyed by conversation ID — stable across renames). Export always
+  reads **only the current conversation**.
 - **Partial-failure handling**: if a document cannot be written (e.g. the file
   is open in LibreOffice), the export retries once under a timestamped
   alternative name; the UI reports which parts succeeded, which failed, and
