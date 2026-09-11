@@ -350,6 +350,37 @@ async function buildPayload(messages, modelIndex, selectedFileList, conversation
 }
 
 // ---- Preview (content preview before sending) ----
+// ---- Duplicate-offer detection ----
+// Normalizes text into a lowercase word-token set (letters/digits only,
+// 3+ chars). Token-based Jaccard similarity across that set.
+function offerTokens(text) {
+  return new Set(String(text).toLowerCase().match(/[a-z\u00e0-\u017f0-9]{3,}/g) || []);
+}
+function offerSimilarity(a, b) {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+// The "offer" is the last user message of the request (what is being
+// submitted now). Compared with the first user message of every stored
+// conversation. Matches >= 70% are reported.
+function findDuplicateOffers(currentMsg, currentConvId) {
+  const cur = offerTokens(currentMsg);
+  if (cur.size < 15) return []; // too short to judge reliably
+  const hits = [];
+  for (const entry of loadConversationsIndex()) {
+    if (currentConvId && entry.id === currentConvId) continue;
+    const conv = loadConversation(entry.id);
+    if (!conv || !conv.messages || !conv.messages.length) continue;
+    const firstUser = conv.messages.find((m) => m.role === 'user');
+    if (!firstUser) continue;
+    const sim = offerSimilarity(cur, offerTokens(firstUser.content));
+    if (sim >= 0.7) hits.push({ id: entry.id, name: entry.name, similarity: Math.round(sim * 100) });
+  }
+  return hits.sort((a, b) => b.similarity - a.similarity).slice(0, 5);
+}
+
 app.post('/api/preview', async (req, res) => {
   const { messages, modelIndex, selectedFiles, conversationId } = req.body;
   if (!messages || !Array.isArray(messages)) {
@@ -357,7 +388,9 @@ app.post('/api/preview', async (req, res) => {
   }
   try {
     const { endpoint, apiKey, model, payload, modelIndex: idx } = await buildPayload(messages, modelIndex, selectedFiles, conversationId);
-    res.json({ endpoint, apiKey, model, payload, modelIndex: idx });
+    const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+    const duplicates = lastUser ? findDuplicateOffers(lastUser.content, conversationId) : [];
+    res.json({ endpoint, apiKey, model, payload, modelIndex: idx, duplicates });
   } catch (e) {
     res.status(500).json({ error: 'Could not prepare preview: ' + e.message });
   }

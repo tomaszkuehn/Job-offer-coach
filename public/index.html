@@ -219,6 +219,12 @@
     }
     .overlay-head h2 { font-size: 15px; }
     .overlay-head .meta { font-size: 12px; color: #7b8794; margin-top: 2px; }
+    .dup-warning {
+      margin: 10px 0 14px; padding: 10px 12px; border-radius: 8px;
+      background: #fdf8e2; border: 1px solid #e8d18a; color: #6b5300;
+      font-size: 12px; line-height: 1.5;
+    }
+    .dup-warning b { color: #8a6100; }
     .overlay-body {
       flex: 1;
       overflow-y: auto;
@@ -1425,9 +1431,21 @@ let streamingActive = false; // a model response is being streamed
       sendBtn.disabled = false;
     }
 
+    function escapeHtml(t) {
+      return String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
     function renderPreview(data) {
       overlayMeta.textContent = `Model: ${data.model}  •  Endpoint: ${data.endpoint}`;
       overlayBody.innerHTML = '';
+      if (data.duplicates && data.duplicates.length) {
+        const warn = document.createElement('div');
+        warn.className = 'dup-warning';
+        const list = data.duplicates
+          .map((d) => `<b>${escapeHtml(d.name)}</b> (${d.similarity}%)`)
+          .join(', ');
+        warn.innerHTML = '&#9888; This offer looks like it has already been analyzed in: ' + list;
+        overlayBody.appendChild(warn);
+      }
       data.payload.messages.forEach((m) => {
         const block = document.createElement('div');
         block.className = 'msg-block';

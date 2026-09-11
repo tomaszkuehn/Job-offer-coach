@@ -91,6 +91,7 @@ scans the conversation for the newest interview-chance percentage, German
 requirement statements, and "applied" / "don't apply" verdicts.
 - A model response keeps **streaming in the background** when you switch to another conversation (or start a new one) — when the stream finishes, the reply is appended to the conversation it belongs to and saved automatically.
 - The **preview overlay** is keyboard-driven: **Enter** sends, **Esc** cancels.
+- **Duplicate-offer warning** — when the submitted message resembles the first message of an already-analyzed conversation (≥ 70 % token similarity), the preview shows a warning listing those conversations with their match percentages. The send itself is never blocked.
 
 ### Exporting CV & Cover Letters (ODT)
 
