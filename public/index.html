@@ -1181,20 +1181,16 @@ let streamingActive = false; // a model response is being streamed
 
     // Guard: switching away while a model response is streaming can lose the
     // in-flight reply — require confirmation.
-    function confirmLeaveWhileStreaming() {
-      if (!streamingActive) return true;
-      return confirm(
-        'A model response is still streaming.\n\n' +
-        'Switching conversations now may LOSE this reply (it will not be saved).\n\n' +
-        'Leave anyway?'
-      );
-    }
-
     async function loadConversation(id) {
-      if (id !== currentConvId && !confirmLeaveWhileStreaming()) return;
       const res = await fetch('/api/conversations/' + id);
       if (!res.ok) return;
+      if (!res.ok) return;
       const conv = await res.json();
+      // If a stream is in flight for the PREVIOUS conversation, detach its
+      // rendering panel now — renderChat() below wipes the chat DOM. The
+      // stream keeps running in the background and will save the reply
+      // into the original conversation when it completes.
+      if (window.__bgStreamDetach) { try { window.__bgStreamDetach(); } catch (_) {} window.__bgStreamDetach = null; }
       currentConvId = conv.id;
       currentConvName = conv.name;
       currentConvModelIndex = (conv.modelIndex !== undefined && conv.modelIndex !== null) ? conv.modelIndex : null;
@@ -1269,7 +1265,6 @@ let streamingActive = false; // a model response is being streamed
     }
 
     async function startNewConversation() {
-      if (!confirmLeaveWhileStreaming()) return;
       const name = convNameInput.value.trim();
       hideNameOverlay();
 
@@ -1282,6 +1277,7 @@ let streamingActive = false; // a model response is being streamed
       // conversation (typical next step: same docs, new offer).
       // The new conversation always gets a DEFAULT name with current timestamp
       // (a typed name belongs to the conversation being flushed, not this one).
+      if (window.__bgStreamDetach) { try { window.__bgStreamDetach(); } catch (_) {} window.__bgStreamDetach = null; }
       currentConvId = null;
       currentConvName = null;
       currentConvModelIndex = null;
@@ -1489,6 +1485,16 @@ let streamingActive = false; // a model response is being streamed
       hideOverlay();
       sendBtn.disabled = true;
       streamingActive = true;
+      // Snapshot the conversation this reply belongs to. Switching to another
+      // conversation mid-stream must NOT abort the request — the reply is
+      // written into this snapshot and saved when the stream finishes.
+      const sendConvId = currentConvId;
+      let sendConvName = currentConvName;
+      let sendMessages = messages;
+      let sendFiles = selectedFiles;
+      const sendModel = activeModel;
+      const isSwitched = () => currentConvId !== sendConvId;
+      window.__bgStreamDetach = () => { detached = true; };
 
       const wrap = document.createElement('div');
       wrap.className = 'msg assistant';
@@ -1506,7 +1512,9 @@ let streamingActive = false; // a model response is being streamed
       let full = '';
       let streamModel = null;
       let renderTimer = null;
+      let detached = false; // user switched away while streaming
       const flush = () => {
+        if (detached) return;
         md.innerHTML = mdToHtml(full || '...');
         chatEl.scrollTop = chatEl.scrollHeight;
       };
@@ -1545,23 +1553,42 @@ let streamingActive = false; // a model response is being streamed
             full = full.slice(0, errIdx);
           }
           if (full.trim() === '' && errPart) {
-            wrap.remove();
-            addMsg('error', errPart);
+            if (!detached) { wrap.remove(); addMsg('error', errPart); }
           } else {
-            flush();
             if (!full.trim()) full = '(empty response)';
-            messages.push({ role: 'assistant', content: full, model: streamModel });
-            badge.textContent = streamModel || '';
-            scheduleCtxUpdate();
-            await saveConversation();
+            if (detached) {
+              // User switched away: append the reply to the ORIGINAL
+              // conversation's stored messages and save it server-side.
+              sendMessages.push({ role: 'assistant', content: full, model: streamModel });
+              const saveBody = {
+                id: sendConvId || undefined,
+                name: sendConvName || 'Conversation',
+                messages: sendMessages,
+                selectedFiles: sendFiles,
+                modelIndex: sendModel
+              };
+              try {
+                await fetch('/api/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(saveBody) });
+              } catch (_) {}
+            } else {
+              flush();
+              messages.push({ role: 'assistant', content: full, model: streamModel });
+              badge.textContent = streamModel || '';
+              scheduleCtxUpdate();
+              await saveConversation();
+            }
           }
         }
       } catch (e) {
-        wrap.remove();
-        addMsg('error', 'Connection error: ' + e.message);
+        if (!detached) {
+          wrap.remove();
+          addMsg('error', 'Connection error: ' + e.message);
+        }
       }
       streamingActive = false;
+      window.__bgStreamDetach = null;
       sendBtn.disabled = false;
+
     }
 
     document.getElementById('overlayClose').addEventListener('click', hideOverlay);

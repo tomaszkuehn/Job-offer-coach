@@ -89,7 +89,7 @@ Click **Save configuration** (the button pulses red when there are unsaved chang
 either fill the fields manually or press **Suggest from content** — the server
 scans the conversation for the newest interview-chance percentage, German
 requirement statements, and "applied" / "don't apply" verdicts.
-- While a model response is **streaming**, switching conversations (or starting a new one) asks for confirmation — the in-flight reply would be lost.
+- A model response keeps **streaming in the background** when you switch to another conversation (or start a new one) — when the stream finishes, the reply is appended to the conversation it belongs to and saved automatically.
 - The **preview overlay** is keyboard-driven: **Enter** sends, **Esc** cancels.
 
 ### Exporting CV & Cover Letters (ODT)
