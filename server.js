@@ -362,6 +362,23 @@ function offerSimilarity(a, b) {
   for (const t of a) if (b.has(t)) inter++;
   return inter / (a.size + b.size - inter);
 }
+// Sliding word 5-grams catch copies whose beginnings differ (different
+// headers/intros from another source): containment = shared sequences
+// relative to the smaller text, so a partially copied offer still scores high.
+function offerNgrams(text, n) {
+  const toks = String(text).toLowerCase().match(/[a-z\u00e0-\u017f0-9]{3,}/g) || [];
+  const set = new Set();
+  for (let i = 0; i + n <= toks.length; i++) set.add(toks.slice(i, i + n).join(' '));
+  return set;
+}
+function offerContainment(a, b, n) {
+  const ga = offerNgrams(a, n), gb = offerNgrams(b, n);
+  if (!ga.size || !gb.size) return 0;
+  const [small, big] = ga.size <= gb.size ? [ga, gb] : [gb, ga];
+  let inter = 0;
+  for (const g of small) if (big.has(g)) inter++;
+  return inter / small.size;
+}
 // The "offer" is the last user message of the request (what is being
 // submitted now). Compared with the first user message of every stored
 // conversation. Matches >= 70% are reported.
@@ -375,7 +392,11 @@ function findDuplicateOffers(currentMsg, currentConvId) {
     if (!conv || !conv.messages || !conv.messages.length) continue;
     const firstUser = conv.messages.find((m) => m.role === 'user');
     if (!firstUser) continue;
-    const sim = offerSimilarity(cur, offerTokens(firstUser.content));
+    const stored = firstUser.content;
+    const sim = Math.max(
+      offerSimilarity(cur, offerTokens(stored)),
+      offerContainment(currentMsg, stored, 5)
+    );
     if (sim >= 0.7) hits.push({ id: entry.id, name: entry.name, similarity: Math.round(sim * 100) });
   }
   return hits.sort((a, b) => b.similarity - a.similarity).slice(0, 5);
