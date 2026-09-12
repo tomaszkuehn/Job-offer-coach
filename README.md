@@ -49,6 +49,10 @@ npm start
 
 Open in your browser: http://localhost:3000
 
+### Auto-start with tray icon
+
+`tray-app.ps1` runs at Windows logon (hidden window, shortcut in `shell:startup\GEM Tray.lnk`). The tray icon shows the server state — green = running, red = stopped (checked every 5 s). Left-click opens the app; right-click menu: **Open GEM / Start – Restart server / Stop server / Exit tray**. If the server is not running at logon, the script starts it. A mutex (`GEMTrayLauncher`) prevents duplicate tray instances.
+
 ## Configuration
 
 In the sidebar:
