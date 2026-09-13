@@ -1346,9 +1346,11 @@ app.post("/api/bulk/run", async (req, res) => {
   const { offers, modelIndex } = req.body;
   if (!Array.isArray(offers) || !offers.length) return res.status(400).json({ error: "No offers" });
   // Client cancel: the offer currently being processed finishes, then the
-  // loop stops (checked between offers).
+  // loop stops (checked between offers). Listen on the RESPONSE - in modern
+  // Node, req 'close' fires as soon as the request body is fully received,
+  // which would abort the run right after the first offer.
   let stopRequested = false;
-  req.on("close", () => { stopRequested = true; });
+  res.on("close", () => { stopRequested = true; });
   // RAG files from the most recently updated conversation.
   const index = loadConversationsIndex();
   const latest = index.slice().sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))[0];
