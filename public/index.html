@@ -219,6 +219,25 @@
     }
     .overlay-head h2 { font-size: 15px; }
     .overlay-head .meta { font-size: 12px; color: #7b8794; margin-top: 2px; }
+    .bulk-offer {
+      display:flex; gap:10px; align-items:flex-start; padding:8px 10px;
+      border:1px solid #e2e7ec; border-radius:8px; margin-bottom:6px; background:#fff;
+    }
+    .bulk-offer input[type=checkbox] { margin-top:3px; }
+    .bulk-offer .bo-main { min-width:0; flex:1 }
+    .bulk-offer .bo-title { font-weight:600; font-size:13px; color:#1f2937 }
+    .bulk-offer .bo-sub { font-size:11px; color:#6b7280; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+    .bulk-status { font-size:11px; padding:2px 8px; border-radius:10px; white-space:nowrap }
+    .bulk-status.pending { color:#4b5563; background:#eef2f6 }
+    .bulk-status.running { color:#1d4ed8; background:#dbeafe }
+    .bulk-status.done { color:#15803d; background:#dcfce7 }
+    .bulk-status.failed { color:#b91c1c; background:#fee2e2 }
+    .metrics-table { width:100%; border-collapse:collapse; font-size:12px }
+    .metrics-table th, .metrics-table td { padding:6px 8px; border-bottom:1px solid #e5e9ee; text-align:left; white-space:nowrap }
+    .metrics-table th { background:#f4f6f8; font-size:11px; color:#4b5563; text-transform:uppercase; letter-spacing:.03em }
+    .metrics-table tr.clickable { cursor:pointer }
+    .metrics-table tr.clickable:hover { background:#f0f7ff }
+    .metrics-table .mrec { font-weight:700 }
     .dup-warning {
       margin: 10px 0 14px; padding: 10px 12px; border-radius: 8px;
       background: #fdf8e2; border: 1px solid #e8d18a; color: #6b5300;
@@ -366,6 +385,10 @@
       <div id="convList"></div>
       <input type="text" id="convSearch" autocomplete="off" placeholder="Search titles or message contents…" style="width:100%; margin-top:8px" />
       <button class="btn secondary" id="newConvBtn" style="width:100%; margin-top:8px">+ New conversation</button>
+      <div class="upload-row" style="margin-top:8px">
+        <button class="btn secondary" id="bulkBtn" style="flex:1">Bulk analysis</button>
+        <button class="btn secondary" id="metricsBtn" style="flex:1">Metrics</button>
+      </div>
     </div>
 
     <div class="section">
@@ -416,6 +439,36 @@
       <button class="btn" id="sendBtn">Send</button>
     </div>
   </main>
+
+  <div class="overlay" id="bulkOverlay">
+    <div class="overlay-box" style="max-width:720px">
+      <div class="overlay-head">
+        <div><h2>Bulk offer analysis</h2><div class="meta" id="bulkMeta"></div></div>
+        <button class="btn secondary" id="bulkClose">&#x2715;</button>
+      </div>
+      <div class="overlay-body" id="bulkBody" style="white-space:normal">
+        <input type="file" id="bulkFile" accept=".txt,.html,.htm" multiple />
+        <div id="bulkOffers" style="margin-top:10px; max-height:340px; overflow:auto"></div>
+      </div>
+      <div class="overlay-foot">
+        <button class="btn secondary" id="bulkCancel">Cancel</button>
+        <button class="btn" id="bulkRun" disabled>Run analysis</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay" id="metricsOverlay">
+    <div class="overlay-box" style="max-width:860px">
+      <div class="overlay-head">
+        <div><h2>Saved metrics</h2><div class="meta">Sorted by "Recommendation" (best first)</div></div>
+        <button class="btn secondary" id="metricsClose">&#x2715;</button>
+      </div>
+      <div class="overlay-body" id="metricsBody" style="white-space:normal; max-height:520px; overflow:auto"></div>
+      <div class="overlay-foot">
+        <button class="btn secondary" id="metricsCancel">Close</button>
+      </div>
+    </div>
+  </div>
 
   <div class="overlay" id="nameOverlay">
     <div class="overlay-box" style="max-width:420px">
@@ -1643,6 +1696,212 @@ let streamingActive = false; // a model response is being streamed
       }
     });
 
+    // ================= Bulk analysis =================
+    const bulkOverlay = document.getElementById('bulkOverlay');
+    const bulkFile = document.getElementById('bulkFile');
+    const bulkOffersEl = document.getElementById('bulkOffers');
+    const bulkMeta = document.getElementById('bulkMeta');
+    const bulkRunBtn = document.getElementById('bulkRun');
+    let bulkParsed = [];
+    let bulkRunning = false;
+
+    function openBulkDialog() {
+      bulkParsed = [];
+      bulkFile.value = '';
+      bulkOffersEl.innerHTML = '';
+      bulkMeta.textContent = 'Select one or more offer files (job.txt exports from the LinkedIn extension).';
+      bulkRunBtn.disabled = true;
+      bulkOverlay.classList.add('show');
+    }
+    function closeBulkDialog() {
+      if (bulkRunning && !confirm('Bulk analysis is still running. Close anyway?')) return;
+      bulkOverlay.classList.remove('show');
+    }
+
+    bulkFile.addEventListener('change', async () => {
+      if (!bulkFile.files || !bulkFile.files.length) return;
+      bulkParsed = [];
+      bulkOffersEl.innerHTML = '<div class="status">Parsing…</div>';
+      for (const f of bulkFile.files) {
+        const fd = new FormData();
+        fd.append('file', f, f.name);
+        try {
+          const r = await fetch('/api/bulk/parse', { method: 'POST', body: fd });
+          const d = await r.json();
+          if (r.ok && Array.isArray(d.offers)) bulkParsed.push(...d.offers);
+          else alert('Parse error: ' + (d.error || r.status));
+        } catch (e) { alert('Upload failed: ' + e.message); }
+      }
+      renderBulkOffers();
+    });
+
+    function renderBulkOffers() {
+      bulkOffersEl.innerHTML = '';
+      if (!bulkParsed.length) {
+        bulkOffersEl.innerHTML = '<div class="status">No offers found in the selected file(s).</div>';
+        bulkRunBtn.disabled = true;
+        return;
+      }
+      bulkParsed.forEach((o, i) => {
+        o._checked = true;
+        const row = document.createElement('div');
+        row.className = 'bulk-offer';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = true;
+        cb.addEventListener('change', () => { o._checked = cb.checked; refreshBulkRunBtn(); });
+        const main = document.createElement('div');
+        main.className = 'bo-main';
+        const t = document.createElement('div');
+        t.className = 'bo-title';
+        t.textContent = o.title || o.company || '(no title)';
+        const sub = document.createElement('div');
+        sub.className = 'bo-sub';
+        sub.textContent = [o.company, o.location].filter(Boolean).join(' | ') + (o.description ? ' — ' + o.description.slice(0, 140).replace(/\s+/g, ' ') + '…' : '');
+        main.appendChild(t);
+        main.appendChild(sub);
+        const st = document.createElement('span');
+        st.className = 'bulk-status pending';
+        st.textContent = 'queued';
+        st.id = 'bulk-status-' + i;
+        row.appendChild(cb);
+        row.appendChild(main);
+        row.appendChild(st);
+        bulkOffersEl.appendChild(row);
+      });
+      bulkMeta.textContent = bulkParsed.length + ' offer(s) found.';
+      refreshBulkRunBtn();
+    }
+    function refreshBulkRunBtn() {
+      bulkRunBtn.disabled = bulkRunning || !bulkParsed.some((o) => o._checked);
+    }
+
+    function setBulkStatus(i, cls, text) {
+      const st = document.getElementById('bulk-status-' + i);
+      if (st) { st.className = 'bulk-status ' + cls; st.textContent = text || cls; }
+    }
+
+    async function runBulk() {
+      const selected = bulkParsed.map((o, i) => ({ ...o, _i: i })).filter((o) => o._checked);
+      if (!selected.length || bulkRunning) return;
+      bulkRunning = true;
+      bulkRunBtn.disabled = true;
+      bulkFile.disabled = true;
+      let done = 0;
+      try {
+        const resp = await fetch('/api/bulk/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            offers: selected.map(({ _i, _checked, ...rest }) => rest),
+            modelIndex: activeModel
+          })
+        });
+        if (!resp.ok || !resp.body) {
+          const d = await resp.json().catch(() => ({}));
+          alert('Bulk run failed: ' + (d.error || resp.status));
+          return;
+        }
+        // Offers run strictly sequentially server-side: the current event
+        // stream order matches the submitted order. Track a moving index.
+        const reader = resp.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        let cur = -1;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop();
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            let ev;
+            try { ev = JSON.parse(line); } catch (_) { continue; }
+            if (ev.event === 'start') {
+              bulkMeta.textContent = 'Running 0 / ' + ev.total + ' (RAG files: ' + ev.ragFiles + ')';
+            } else if (ev.event === 'offer-start') {
+              cur++;
+              if (cur < selected.length) setBulkStatus(selected[cur]._i, 'running', 'analyzing');
+            } else if (ev.event === 'offer-done') {
+              const rec = (ev.metrics && ev.metrics.recommend != null) ? ('done · ' + ev.metrics.recommend + '%') : 'done';
+              if (cur >= 0 && cur < selected.length) setBulkStatus(selected[cur]._i, 'done', rec);
+              done++;
+              bulkMeta.textContent = 'Running ' + done + ' / ' + selected.length;
+            } else if (ev.event === 'offer-failed') {
+              if (cur >= 0 && cur < selected.length) setBulkStatus(selected[cur]._i, 'failed', 'failed: ' + String(ev.error || '').slice(0, 40));
+              bulkMeta.textContent = 'Running ' + done + ' / ' + selected.length;
+            }
+          }
+        }
+        bulkMeta.textContent = 'Finished.';
+      } catch (e) {
+        alert('Bulk run error: ' + e.message);
+      }
+      bulkRunning = false;
+      bulkFile.disabled = false;
+      refreshBulkRunBtn();
+      await loadConversations();
+    }
+
+    bulkRunBtn.addEventListener('click', runBulk);
+    document.getElementById('bulkBtn').addEventListener('click', openBulkDialog);
+    document.getElementById('bulkClose').addEventListener('click', closeBulkDialog);
+    document.getElementById('bulkCancel').addEventListener('click', closeBulkDialog);
+    bulkOverlay.addEventListener('click', (e) => { if (e.target === bulkOverlay) closeBulkDialog(); });
+
+    // ================= Metrics view =================
+    const metricsOverlay = document.getElementById('metricsOverlay');
+    const metricsBody = document.getElementById('metricsBody');
+    async function openMetrics() {
+      metricsOverlay.classList.add('show');
+      metricsBody.innerHTML = '<div class="status">Loading…</div>';
+      try {
+        const r = await fetch('/api/metrics');
+        const d = await r.json();
+        renderMetrics(d.entries || []);
+      } catch (e) {
+        metricsBody.innerHTML = '<div class="status">Failed to load metrics.</div>';
+      }
+    }
+    function renderMetrics(entries) {
+      metricsBody.innerHTML = '';
+      if (!entries.length) {
+        metricsBody.innerHTML = '<div class="status">No metrics saved yet. Run "Bulk analysis" first.</div>';
+        return;
+      }
+      const tbl = document.createElement('table');
+      tbl.className = 'metrics-table';
+      const thead = document.createElement('thead');
+      thead.innerHTML = '<tr><th>Recommend</th><th>Company</th><th>Position</th><th>Interview</th><th>Employment</th><th>Role</th><th>Satisf.</th><th>Salary</th><th>Date</th></tr>';
+      tbl.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      entries.forEach((e) => {
+        const m = e.metrics || {};
+        const tr = document.createElement('tr');
+        tr.className = 'clickable';
+        tr.title = 'Open the conversation';
+        const fmt = (v) => (v === null || v === undefined) ? '\u2014' : v + '%';
+        const cells = [fmt(m.recommend), e.company || '\u2013', e.jobTitle || '\u2013', fmt(m.interview), fmt(m.employment), fmt(m.role), fmt(m.satisfaction), fmt(m.salary), (e.createdAt || '').slice(0, 10)];
+        cells.forEach((c, ci) => {
+          const td = document.createElement('td');
+          if (ci === 0) td.className = 'mrec';
+          td.textContent = c;
+          tr.appendChild(td);
+        });
+        tr.addEventListener('click', async () => {
+          metricsOverlay.classList.remove('show');
+          await loadConversation(e.convId);
+        });
+        tbody.appendChild(tr);
+      });
+      tbl.appendChild(tbody);
+      metricsBody.appendChild(tbl);
+    }
+    document.getElementById('metricsBtn').addEventListener('click', openMetrics);
+    document.getElementById('metricsClose').addEventListener('click', () => metricsOverlay.classList.remove('show'));
+    document.getElementById('metricsCancel').addEventListener('click', () => metricsOverlay.classList.remove('show'));
+    metricsOverlay.addEventListener('click', (e) => { if (e.target === metricsOverlay) metricsOverlay.classList.remove('show'); });
     loadConfig();
     loadConversations();
     scheduleCtxUpdate();

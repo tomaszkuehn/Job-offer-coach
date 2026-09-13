@@ -938,6 +938,335 @@ app.post('/api/export-package', async (req, res) => {
   res.json({ ok: true, exported, outDir: 'moje_dok/odt' });
 });
 
+// ---- Bulk analysis (offer file -> parsed offers -> automated conversations) ----
+const METRICS_FILE = path.join(DATA_DIR, 'metrics.json');
+
+function loadMetrics() {
+  if (fs.existsSync(METRICS_FILE)) {
+    try { return JSON.parse(fs.readFileSync(METRICS_FILE, 'utf8')); } catch (e) { return { entries: [] }; }
+  }
+  return { entries: [] };
+}
+
+function saveMetrics(m) {
+  fs.writeFileSync(METRICS_FILE, JSON.stringify(m, null, 2));
+}
+
+function htmlToText(html) {
+  return String(html)
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<!--([\s\S]*?)-->/g, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/[ \t\f\v]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function decodeEntities(t) {
+  return String(t).replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#39;/gi, "'");
+}
+
+// Split a LinkedIn HTML snapshot file into per-offer chunks: each offer
+// snapshot contains exactly one "jobs-search__job-details--wrapper" block.
+function splitHtmlOffers(text) {
+  const marker = 'jobs-search__job-details--wrapper';
+  const positions = [];
+  let i = text.indexOf(marker);
+  while (i !== -1) { positions.push(i); i = text.indexOf(marker, i + marker.length); }
+  if (positions.length <= 1) return positions.length === 1 ? [text] : [];
+  const chunks = [];
+  for (let k = 0; k < positions.length; k++) {
+    const start = k === 0 ? 0 : Math.max(0, positions[k] - 200);
+    const end = k === positions.length - 1 ? text.length : Math.max(0, positions[k + 1] - 200);
+    chunks.push(text.slice(start, end));
+  }
+  return chunks;
+}
+
+// Parse one LinkedIn HTML offer chunk into metadata + description.
+function parseHtmlOffer(chunk) {
+  let title = '';
+  let m = chunk.match(/aria-label="([^"]{3,150})"\s+class="jobs-search__job-details--container/);
+  if (m) title = decodeEntities(m[1]);
+  if (!title) {
+    m = chunk.match(/<h1[^>]*>[\s\S]{0,400}?<a[^>]*>([^<]{3,150})<\/a>[\s\S]{0,40}?<\/h1>/);
+    if (m) title = decodeEntities(m[1].trim());
+  }
+  if (!title) {
+    m = chunk.match(/top-card__job-title[\s\S]{0,300}?<a[^>]*>([^<]{3,150})</);
+    if (m) title = decodeEntities(m[1].trim());
+  }
+
+  let company = '';
+  m = chunk.match(/top-card__company-name[\s\S]{0,900}?<a[^>]*>[\s\S]{0,200}?>([\s\S]{2,120}?)<\/a>/);
+  if (m) company = decodeEntities(m[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+
+  let location = '';
+  m = chunk.match(/top-card__primary-description[\s\S]{0,600}?tvm__text[^>]*>(?:<!---->)?([^<>]{2,120}?)(?:<!---->)?</);
+  if (m) location = decodeEntities(m[1].trim());
+  if (!location) {
+    m = chunk.match(/top-card__bullet[\s\S]{0,300}?<[^>]*>([\s\S]{2,120}?)</);
+    if (m) location = decodeEntities(m[1].replace(/<[^>]+>/g, " ").trim());
+  }
+
+  let url = '';
+  m = chunk.match(/<a[^>]+href="((?:https:\/\/www\.linkedin\.com)?\/jobs\/view\/[^"#?]+)/);
+  if (m) url = m[1].startsWith('http') ? m[1] : ('https://www.linkedin.com' + m[1]);
+
+  // Description: text after the last "About the job" heading (most robust).
+  let descHtml = null;
+  const idx = chunk.toLowerCase().lastIndexOf("about the job");
+  if (idx !== -1) descHtml = chunk.slice(idx);
+  let description = descHtml ? htmlToText(descHtml) : "";
+  // Cut trailing LinkedIn page chrome that follows the real description
+  // (marker search on a whitespace-flattened copy, markers span line breaks).
+  const cutMarkers = ['Company photos', 'Report this job', 'Was this job', 'Get AI-powered advice',
+    "Don't miss this job", 'Page 1 of', 'Previous Next', 'Show less', 'Interested in working for our company',
+    "I'm interested", 'Learn more about', 'Meet your hiring team', 'Learn more', 'Apply now', 'Save job',
+    'Report job', 'Show all'];
+  const flat = description.replace(/\s+/g, ' ');
+  let cutAt = flat.length;
+  for (const cut of cutMarkers) {
+    const ci = flat.indexOf(cut);
+    if (ci > 200 && ci < cutAt) cutAt = ci;
+  }
+  description = flat.slice(0, cutAt).trim();
+  return { title, company, location, url, description };
+}
+
+// Plain-text offer format produced by the extension "Copy" button:
+//   title \n company \n location \n url \n --- \n description
+function parsePlainOffers(text) {
+  const parts = String(text).split(/^\s*-{3,}\s*$/m);
+  const offers = [];
+  for (let k = 0; k + 1 < parts.length; k += 2) {
+    const head = parts[k].trim().split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const description = (parts[k + 1] || "").trim();
+    if (!head.length || description.length < 100) continue;
+    let url = "";
+    for (const l of head) if (/^https?:\/\//.test(l)) { url = l; break; }
+    offers.push({ title: head[0] || '', company: head[1] || '', location: head[2] || '', url, description });
+  }
+  return offers;
+}
+
+function parseOfferFile(text) {
+  const all = [];
+  for (const chunk of splitHtmlOffers(text)) {
+    const o = parseHtmlOffer(chunk);
+    if ((o.title || o.company) && o.description && o.description.length > 100) all.push(o);
+  }
+  if (!all.length) {
+    for (const o of parsePlainOffers(text)) all.push(o);
+  }
+  return all;
+}
+
+// Extract the METRYKA block from an assistant reply.
+function extractMetryka(text) {
+  if (!text) return null;
+  const up = String(text).toUpperCase();
+  const idx = up.indexOf("METRYKA");
+  if (idx === -1) return null;
+  const tail = String(text).slice(idx, idx + 1500);
+  // Prefer the line containing METRYKA, else the whole tail.
+  const lineMatch = tail.split("\n").find((l) => l.toUpperCase().includes("METRYKA"));
+  const line = lineMatch || tail;
+  const grab = (re) => {
+    const m = line.match(re);
+    if (!m) return null;
+    const v = parseInt(m[1], 10);
+    return (v >= 0 && v <= 100) ? v : null;
+  };
+  const metrics = {
+    interview: grab(/(?:interview|rozmow\w*)[^|\n]{0,30}?(\d{1,3})\s*%/i),
+    employment: grab(/zatrudnien\w*[^|\n]{0,30}?(\d{1,3})\s*%/i),
+    role: grab(/dopasowan\w*[^|\n]{0,30}?(\d{1,3})\s*%/i),
+    satisfaction: grab(/satysfakcj\w*[^|\n]{0,30}?(\d{1,3})\s*%/i),
+    salary: grab(/wynagrodzen\w*[^|\n]{0,30}?(\d{1,3})\s*%/i),
+    recommend: grab(/(?:rekomendacj\w*[^|\n]{0,30}?(\d{1,3})\s*%)/i)
+  };
+  // Fallback: pipe-separated values in order.
+  if (metrics.recommend === null) {
+    const vals = (line.match(/\d{1,3}\s*%/g) || []).map((v) => parseInt(v, 10)).filter((v) => v >= 0 && v <= 100);
+    if (vals.length >= 6) {
+      const keys = ["interview", "employment", "role", "satisfaction", "salary", "recommend"];
+      for (let i = 0; i < 6; i++) if (metrics[keys[i]] === null) metrics[keys[i]] = vals[i];
+    }
+  }
+  if (metrics.recommend === null) return null;
+  return { metrics, raw: line.trim().slice(0, 600) };
+}
+
+// Title for the conversation created from an offer.
+function bulkOfferTitle(offer) {
+  const t = (offer.company && offer.title) ? (offer.company + ' - ' + offer.title) : (offer.company || offer.title);
+  return t ? t.slice(0, 80) : "Job offer";
+}
+
+// Run one offer: create the conversation (latest RAG set), call the model,
+// extract METRYKA. 2 attempts; on failure the conversation is deleted.
+async function runBulkOffer(offer, ragFiles, modelIndex) {
+  const userMsg = [offer.title, offer.company, offer.location, offer.url, "---", offer.description]
+    .filter((x) => String(x || "").trim().length).join("\n");
+  let convId = null;
+  let lastError = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    // Create a fresh conversation carrying the RAG selection.
+    convId = null;
+    try {
+      const convIdNew = (Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
+      const convDirNew = path.join(CONVERSATIONS_DIR, convIdNew);
+      fs.mkdirSync(convDirNew, { recursive: true });
+      fs.mkdirSync(path.join(convDirNew, "files"), { recursive: true });
+      const now0 = new Date().toISOString();
+      const ragFilesKept = (ragFiles || []).map((f) => path.basename(String(f)))
+        .filter((f) => fs.existsSync(path.join(UPLOAD_DIR, f)));
+      fs.writeFileSync(path.join(convDirNew, "conversation.json"), JSON.stringify({
+        id: convIdNew, name: "Bulk analysis...", createdAt: now0, updatedAt: now0,
+        messages: [], selectedFiles: ragFilesKept,
+        modelIndex: (modelIndex !== undefined ? modelIndex : null),
+        tags: { matchPct: null, german: null, status: null }
+      }, null, 2));
+      const index0 = loadConversationsIndex();
+      index0.unshift({ id: convIdNew, name: "Bulk analysis...", createdAt: now0, updatedAt: now0,
+        messageCount: 0, tags: { matchPct: null, german: null, status: null } });
+      saveConversationsIndex(index0);
+      convId = convIdNew;
+      // Ask the model (non-stream; full reply in one response).
+      const built = await buildPayload([{ role: "user", content: userMsg }], modelIndex, ragFilesKept, convId);
+      const headers = { "Content-Type": "application/json" };
+      if (built.apiKey) headers["Authorization"] = "Bearer " + built.apiKey;
+      const upstream = await fetch(built.endpoint, { method: "POST", headers, body: JSON.stringify(built.payload) });
+      if (!upstream.ok) throw new Error("Model error (" + upstream.status + ")");
+      const data = await upstream.json();
+      const content = (data.message && data.message.content) ||
+        ((data.choices && data.choices[0] && data.choices[0].message) ? data.choices[0].message.content : "");
+      if (!content || String(content).trim().length < 50) throw new Error("Empty model reply");
+      // Success: store messages, rename, extract METRYKA.
+      const name = bulkOfferTitle(offer);
+      const messages = [
+        { role: "user", content: userMsg },
+        { role: "assistant", content: String(content) }
+      ];
+      const convDir = path.join(CONVERSATIONS_DIR, convId);
+      const now = new Date().toISOString();
+      const full = loadConversation(convId);
+      full.name = name;
+      full.messages = messages;
+      full.updatedAt = now;
+      const met = extractMetryka(content);
+      if (met && met.metrics.interview !== null) {
+        full.tags = { ...full.tags, matchPct: met.metrics.interview };
+      }
+      fs.writeFileSync(path.join(convDir, "conversation.json"), JSON.stringify(full, null, 2));
+      const index = loadConversationsIndex();
+      const entry = index.find((c) => c.id === convId);
+      if (entry) { entry.name = name; entry.updatedAt = now; entry.messageCount = messages.length;
+        if (met && met.metrics.interview !== null) entry.tags.matchPct = met.metrics.interview;
+        saveConversationsIndex(index);
+      }
+      // Record the metric.
+      if (met) {
+        const store = loadMetrics();
+        store.entries.push({
+          convId,
+          convName: name,
+          createdAt: now,
+          company: offer.company || "",
+          jobTitle: offer.title || "",
+          location: offer.location || "",
+          url: offer.url || "",
+          metrics: met.metrics,
+          raw: met.raw
+        });
+        saveMetrics(store);
+      }
+      return { ok: true, convId, name, metrics: met ? met.metrics : null };
+    } catch (e) {
+      lastError = e.message;
+      // Remove the failed conversation before retrying / giving up.
+      if (convId) {
+        try {
+          const dir = path.join(CONVERSATIONS_DIR, convId);
+          if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+          saveConversationsIndex(loadConversationsIndex().filter((c) => c.id !== convId));
+        } catch (_) {}
+        convId = null;
+      }
+    }
+  }
+  return { ok: false, error: lastError || "unknown error" };
+}
+
+// Parse an uploaded offer file (no side effects).
+app.post("/api/bulk/parse", upload.single("file"), (req, res) => {
+  try {
+    const p = req.file ? req.file.path : null;
+    if (!p) return res.status(400).json({ error: "No file" });
+    const text = fs.readFileSync(p, "utf8");
+    fs.unlinkSync(p);
+    const offers = parseOfferFile(text);
+    res.json({ ok: true, offers, count: offers.length });
+  } catch (e) {
+    res.status(500).json({ error: "Parse failed: " + e.message });
+  }
+});
+
+// Run bulk analysis over the selected offers. Progress is streamed as
+// NDJSON lines: {"event":"offer-start"|"offer-done"|"offer-failed", ...}.
+app.post("/api/bulk/run", async (req, res) => {
+  const { offers, modelIndex } = req.body;
+  if (!Array.isArray(offers) || !offers.length) return res.status(400).json({ error: "No offers" });
+  // RAG files from the most recently updated conversation.
+  const index = loadConversationsIndex();
+  const latest = index.slice().sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))[0];
+  let ragFiles = [];
+  if (latest) {
+    const conv = loadConversation(latest.id);
+    if (conv && Array.isArray(conv.selectedFiles)) ragFiles = conv.selectedFiles;
+  }
+  res.setHeader("Content-Type", "application/x-ndjson");
+  res.setHeader("Cache-Control", "no-cache");
+  res.flushHeaders();
+  const send = (obj) => { try { res.write(JSON.stringify(obj) + "\n"); } catch (_) {} };
+  send({ event: "start", total: offers.length, ragFiles: ragFiles.length });
+  for (const offer of offers) {
+    send({ event: "offer-start", title: offer.title || "", company: offer.company || "" });
+    const r = await runBulkOffer(offer, ragFiles, modelIndex);
+    if (r.ok) send({ event: "offer-done", convId: r.convId, name: r.name, metrics: r.metrics });
+    else send({ event: "offer-failed", error: r.error, title: offer.title || "", company: offer.company || "" });
+  }
+  send({ event: "done" });
+  res.end();
+});
+
+// Metrics list sorted by "recommend" (desc), newest first as tiebreak.
+app.get("/api/metrics", (req, res) => {
+  const store = loadMetrics();
+  const entries = store.entries.slice().sort((a, b) => {
+    const ra = (a.metrics && a.metrics.recommend) || -1;
+    const rb = (b.metrics && b.metrics.recommend) || -1;
+    if (rb !== ra) return rb - ra;
+    return String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
+  });
+  res.json({ entries });
+});
+
+app.delete("/api/metrics/:convId", (req, res) => {
+  const store = loadMetrics();
+  store.entries = store.entries.filter((e) => e.convId !== req.params.convId);
+  saveMetrics(store);
+  res.json({ ok: true });
+});
 // ---- Chat ----
 app.post('/api/chat', async (req, res) => {
   const { messages, modelIndex, selectedFiles, conversationId } = req.body;

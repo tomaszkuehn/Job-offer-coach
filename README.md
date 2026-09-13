@@ -19,6 +19,8 @@ Attribution-Required **Non-Commercial No-Derivatives** (`AN-NC-ND`, custom, CC B
 - **RAG files (no embeddings)** — TXT/MD/PDF files attached as text to every request. Files are **content-addressed** (see below) and attached **per conversation**.
 - **Preview before sending** — an overlay showing the full payload (system prompt + RAG files + history), with the option to block the request.
 - **Conversations** — save, rename, and restore from history. A new conversation keeps the RAG selection and model; the current conversation is highlighted in green on the list, and browsing archives does not reorder the list (ordering is by last *content* change, not last access).
+- **Bulk analysis** — pick one or more offer files (`job.txt` from the LinkedIn extension: full LinkedIn HTML snapshots, one or many offers per file, or the plain-text "copy" format `title / company / location / url / --- / description`), tick the offers to process, and GEM automatically creates a conversation per offer with the **RAG file set of the latest conversation**, sends the offer, waits for the full reply, renames the conversation to `Company — Position`, and extracts the **METRYKA** block (interview / employment / role fit / satisfaction / salary / recommend %) into `data/metrics.json`. A failed offer deletes its conversation and is retried once; a second failure skips it. Progress is streamed per offer (NDJSON) and shown as status chips in the dialog.
+- **Metrics view** — a "Metrics" button lists all saved metrics sorted by the *Recommend* score (best first); clicking a row opens the conversation the metric came from.
 - **Live context-size indicator** — a badge next to the model switcher shows the estimated context size in kB (green / yellow / red thresholds) so cost and limit pressure are visible before sending.
 
 ## Content-addressed RAG files
@@ -170,6 +172,10 @@ on PATH).
 | POST | `/api/conversations/:id/tags/analyze` | Suggest tags from conversation content (does not save) |
 | DELETE | `/api/conversations/:id` | Delete a conversation |
 | POST | `/api/export-package` | Extract CV + cover letters from the latest package in a conversation and convert them to ODT (`{ conversationId }`); returns `207` with a `failed` list on partial success |
+| POST | `/api/bulk/parse` | Parse an uploaded offer file (multipart `file`); returns `{ offers: [{ title, company, location, url, description }] }` |
+| POST | `/api/bulk/run` | Run bulk analysis (`{ offers, modelIndex }`); NDJSON progress events `start` / `offer-start` / `offer-done` / `offer-failed` / `done` |
+| GET | `/api/metrics` | All saved METRYKA entries, sorted by `recommend` (desc) |
+| DELETE | `/api/metrics/:convId` | Delete the metric entry of a conversation |
 
 Chat requests (`preview`, `chat`, `chat/stream`, `context-size`) accept
 `{ messages, modelIndex, selectedFiles, conversationId }` — the RAG file
