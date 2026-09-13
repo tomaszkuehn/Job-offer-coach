@@ -382,6 +382,32 @@ function offerContainment(a, b, n) {
 // The "offer" is the last user message of the request (what is being
 // submitted now). Compared with the first user message of every stored
 // conversation. Matches >= 70% are reported.
+// Flag parsed bulk offers that are already analyzed in stored conversations.
+function flagStoredOffers(offers) {
+  const stored = [];
+  for (const entry of loadConversationsIndex()) {
+    const conv = loadConversation(entry.id);
+    if (!conv || !conv.messages || !conv.messages.length) continue;
+    const firstUser = conv.messages.find((m) => m.role === "user");
+    if (!firstUser) continue;
+    stored.push({ id: entry.id, name: entry.name, tokens: offerTokens(firstUser.content), content: firstUser.content });
+  }
+  for (const o of offers) {
+    o.duplicate = null;
+    const text = [o.title, o.company, o.description].filter(Boolean).join("\n");
+    const cur = offerTokens(text);
+    if (cur.size < 15) continue;
+    for (const st of stored) {
+      const sim = Math.max(offerSimilarity(cur, st.tokens), offerContainment(text, st.content, 5));
+      if (sim >= 0.7) {
+        o.duplicate = { id: st.id, name: st.name, similarity: Math.round(sim * 100) };
+        break;
+      }
+    }
+  }
+  return offers;
+}
+
 function findDuplicateOffers(currentMsg, currentConvId) {
   const cur = offerTokens(currentMsg);
   if (cur.size < 15) return []; // too short to judge reliably
@@ -1039,11 +1065,89 @@ function parseHtmlOffer(chunk) {
     if (ci > 200 && ci < cutAt) cutAt = ci;
   }
   description = flat.slice(0, cutAt).trim();
-  return { title, company, location, url, description };
+  return { title, company, location, url, status: '', workplace: '', salary: '', savedAt: '', description };
 }
 
 // Plain-text offer format produced by the extension "Copy" button:
 //   title \n company \n location \n url \n --- \n description
+// ---- CSV (LinkedIn extension export) ----
+// RFC-4180-ish split: handles "..." quoting with "" escapes.
+function parseCsvLines(text) {
+  const rows = [];
+  let row = [], field = "", inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === "\u0022") {
+        if (text[i + 1] === "\u0022") { field += "\u0022"; i++; }
+        else inQ = false;
+      } else field += c;
+    } else if (c === "\u0022") inQ = true;
+    else if (c === ",") { row.push(field); field = ""; }
+    else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+    else if (c !== "\r") field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.some((c) => String(c).trim().length));
+}
+
+function parseCsvOffers(text) {
+  const clean = String(text).replace(/^\uFEFF/, "");
+  const rows = parseCsvLines(clean);
+  if (!rows.length) return [];
+  const head = rows[0].map((h) => h.trim());
+  const col = (name) => head.findIndex((h) => h.toLowerCase() === name);
+  const iT = col("title"), iC = col("company"), iL = col("location"),
+    iU = col("url"), iD = col("descriptiontext"), iS = col("status"),
+    iW = col("workplacetype"), iSA = col("savedat"), iSAL = col("salary");
+  if (iT === -1 && iC === -1) return [];
+  const offers = [];
+  for (const r of rows.slice(1)) {
+    const description = (iD >= 0 ? r[iD] || "" : "").trim();
+    if (description.length < 100) continue;
+    offers.push({
+      title: (iT >= 0 ? r[iT] : '') || '',
+      company: (iC >= 0 ? r[iC] : '') || '',
+      location: (iL >= 0 ? r[iL] : '') || '',
+      status: (iS >= 0 ? r[iS] : '') || '',
+      workplace: (iW >= 0 ? r[iW] : '') || '',
+      salary: (iSAL >= 0 ? r[iSAL] : '') || '',
+      savedAt: (iSA >= 0 ? r[iSA] : '') || '',
+      url: (iU >= 0 ? r[iU] : '') || '',
+      description
+    });
+  }
+  return offers;
+}
+
+// LinkedIn extension "Export JSON": { saved: [...], seen: [...] } (or a bare
+// array). Job objects carry workplaceType / salary / status / savedAt.
+function parseJsonOffers(text) {
+  let data;
+  try { data = JSON.parse(String(text).replace(/^\uFEFF/, "")); } catch (e) { return []; }
+  let jobs = [];
+  if (Array.isArray(data)) jobs = data;
+  else if (data && Array.isArray(data.saved)) jobs = data.saved;
+  else if (data && Array.isArray(data.jobs)) jobs = data.jobs;
+  const offers = [];
+  for (const j of jobs) {
+    const description = String(j.descriptionText || "").trim();
+    if (description.length < 100) continue;
+    const wt = String(j.workplaceType || "");
+    offers.push({
+      title: j.title || '',
+      company: j.company || '',
+      location: j.location || '',
+      url: j.url || (j.jobId ? "https://www.linkedin.com/jobs/view/" + j.jobId + "/" : ""),
+      status: j.status || '',
+      workplace: wt,
+      salary: j.salary || '',
+      savedAt: j.savedAt || '',
+      description
+    });
+  }
+  return offers;
+}
 function parsePlainOffers(text) {
   const parts = String(text).split(/^\s*-{3,}\s*$/m);
   const offers = [];
@@ -1053,7 +1157,7 @@ function parsePlainOffers(text) {
     if (!head.length || description.length < 100) continue;
     let url = "";
     for (const l of head) if (/^https?:\/\//.test(l)) { url = l; break; }
-    offers.push({ title: head[0] || '', company: head[1] || '', location: head[2] || '', url, description });
+    offers.push({ title: head[0] || '', company: head[1] || '', location: head[2] || '', url, status: '', workplace: '', salary: '', savedAt: '', description });
   }
   return offers;
 }
@@ -1063,6 +1167,20 @@ function parseOfferFile(text) {
   for (const chunk of splitHtmlOffers(text)) {
     const o = parseHtmlOffer(chunk);
     if ((o.title || o.company) && o.description && o.description.length > 100) all.push(o);
+  }
+  if (!all.length) {
+    // LinkedIn extension "Export JSON" ({saved:[...]} or bare array).
+    const trimmed = String(text).replace(/^\uFEFF/, '').trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      for (const o of parseJsonOffers(trimmed)) all.push(o);
+    }
+  }
+  if (!all.length) {
+    // LinkedIn extension CSV export (header row: jobId,title,company,...).
+    const first = String(text).replace(/^\uFEFF/, '').split(/\r?\n/, 1)[0] || '';
+    if (/\bjobid\b/i.test(first) && /\btitle\b/i.test(first) && /\bdescriptiontext\b/i.test(first)) {
+      for (const o of parseCsvOffers(text)) all.push(o);
+    }
   }
   if (!all.length) {
     for (const o of parsePlainOffers(text)) all.push(o);
@@ -1215,6 +1333,7 @@ app.post("/api/bulk/parse", upload.single("file"), (req, res) => {
     const text = fs.readFileSync(p, "utf8");
     fs.unlinkSync(p);
     const offers = parseOfferFile(text);
+    flagStoredOffers(offers);
     res.json({ ok: true, offers, count: offers.length });
   } catch (e) {
     res.status(500).json({ error: "Parse failed: " + e.message });
