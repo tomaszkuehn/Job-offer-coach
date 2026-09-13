@@ -1879,8 +1879,8 @@ let streamingActive = false; // a model response is being streamed
         let buf = '';
         let cur = -1;
         while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+          const { done: streamDone, value } = await reader.read();
+          if (streamDone) break;
           buf += dec.decode(value, { stream: true });
           const lines = buf.split('\n');
           buf = lines.pop();
