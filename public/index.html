@@ -1758,6 +1758,7 @@ let streamingActive = false; // a model response is being streamed
     const bulkRunBtn = document.getElementById('bulkRun');
     let bulkParsed = [];
     let bulkRunning = false;
+    let bulkAbort = null; // AbortController while a run is in flight
 
     function openBulkDialog() {
       bulkParsed = [];
@@ -1768,7 +1769,10 @@ let streamingActive = false; // a model response is being streamed
       bulkOverlay.classList.add('show');
     }
     function closeBulkDialog() {
-      if (bulkRunning && !confirm('Bulk analysis is still running. Close anyway?')) return;
+      if (bulkRunning) {
+        // Cancel: let the in-flight offer finish server-side, then stop.
+        requestBulkStop('Cancelling after current offer...');
+      }
       bulkOverlay.classList.remove('show');
     }
 
@@ -1855,12 +1859,14 @@ let streamingActive = false; // a model response is being streamed
       const selected = bulkParsed.map((o, i) => ({ ...o, _i: i })).filter((o) => o._checked);
       if (!selected.length || bulkRunning) return;
       bulkRunning = true;
+      bulkAbort = new AbortController();
       bulkRunBtn.disabled = true;
       bulkFile.disabled = true;
-      let done = 0;
+      bulkMeta.textContent = 'Running 0 / ' + selected.length;      let done = 0;
       try {
         const resp = await fetch('/api/bulk/run', {
           method: 'POST',
+          signal: bulkAbort.signal,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             offers: selected.map(({ _i, _checked, ...rest }) => rest),
@@ -1906,12 +1912,18 @@ let streamingActive = false; // a model response is being streamed
         }
         bulkMeta.textContent = 'Finished.';
       } catch (e) {
-        alert('Bulk run error: ' + e.message);
+        if (e.name !== 'AbortError') alert('Bulk run error: ' + e.message);
       }
+      bulkAbort = null;
       bulkRunning = false;
       bulkFile.disabled = false;
       refreshBulkRunBtn();
       await loadConversations();
+    }
+    function requestBulkStop(msg) {
+      if (!bulkRunning || !bulkAbort) return;
+      bulkMeta.textContent = msg || 'Stopping after current offer...';
+      bulkAbort.abort(); // server finishes the in-flight offer, then breaks
     }
 
     bulkRunBtn.addEventListener('click', runBulk);

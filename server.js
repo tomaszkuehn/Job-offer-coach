@@ -1345,6 +1345,10 @@ app.post("/api/bulk/parse", upload.single("file"), (req, res) => {
 app.post("/api/bulk/run", async (req, res) => {
   const { offers, modelIndex } = req.body;
   if (!Array.isArray(offers) || !offers.length) return res.status(400).json({ error: "No offers" });
+  // Client cancel: the offer currently being processed finishes, then the
+  // loop stops (checked between offers).
+  let stopRequested = false;
+  req.on("close", () => { stopRequested = true; });
   // RAG files from the most recently updated conversation.
   const index = loadConversationsIndex();
   const latest = index.slice().sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))[0];
@@ -1359,12 +1363,13 @@ app.post("/api/bulk/run", async (req, res) => {
   const send = (obj) => { try { res.write(JSON.stringify(obj) + "\n"); } catch (_) {} };
   send({ event: "start", total: offers.length, ragFiles: ragFiles.length });
   for (const offer of offers) {
+    if (stopRequested) break;
     send({ event: "offer-start", title: offer.title || "", company: offer.company || "" });
     const r = await runBulkOffer(offer, ragFiles, modelIndex);
     if (r.ok) send({ event: "offer-done", convId: r.convId, name: r.name, metrics: r.metrics });
     else send({ event: "offer-failed", error: r.error, title: offer.title || "", company: offer.company || "" });
   }
-  send({ event: "done" });
+  send({ event: "done", stopped: stopRequested });
   res.end();
 });
 
