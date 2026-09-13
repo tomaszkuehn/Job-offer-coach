@@ -21,6 +21,7 @@ Attribution-Required **Non-Commercial No-Derivatives** (`AN-NC-ND`, custom, CC B
 - **Conversations** — save, rename, and restore from history. A new conversation keeps the RAG selection and model; the current conversation is highlighted in green on the list, and browsing archives does not reorder the list (ordering is by last *content* change, not last access).
 - **Bulk analysis** — pick one or more offer files (the **CSV export** from the LinkedIn extension options page — `linkedin-jobs.csv` with `jobId,title,company,location,workplaceType,url,status,savedAt,descriptionText` headers, or the legacy `job.txt`: full LinkedIn HTML snapshots, one or many offers per file, or the plain-text "copy" format `title / company / location / url / --- / description`), tick the offers to process, and GEM automatically creates a conversation per offer with the **RAG file set of the latest conversation**, sends the offer, waits for the full reply, renames the conversation to `Company — Position`, and extracts the **METRYKA** block (interview / employment / role fit / satisfaction / salary / recommend %) into `data/metrics.json`. A failed offer deletes its conversation and is retried once; a second failure skips it. Progress is streamed per offer (NDJSON) and shown as status chips in the dialog. Offers already analyzed in stored conversations (≥ 70 % similarity, same algorithm as the preview warning) are **highlighted in yellow and unchecked by default**, with a "Already analyzed in: …" badge. Each row shows the CSV `Status` value as a chip (apply / applied / to-consider / german / ignored); clicking the row body opens a **full offer preview** (Esc / ✕ / backdrop closes).
 - **Metrics view** — a "Metrics" button lists all saved metrics sorted by the *Recommend* score (best first); clicking a row opens the conversation the metric came from.
+- **Backup & restore** — a "Backup & restore" button downloads a ZIP of the whole `data/` directory (config incl. API keys, conversations, RAG files, metrics); restoring from a ZIP (with confirmation) wipes and replaces the current data.
 - **Live context-size indicator** — a badge next to the model switcher shows the estimated context size in kB (green / yellow / red thresholds) so cost and limit pressure are visible before sending.
 
 ## Content-addressed RAG files
@@ -176,6 +177,8 @@ on PATH).
 | POST | `/api/bulk/run` | Run bulk analysis (`{ offers, modelIndex }`); NDJSON progress events `start` / `offer-start` / `offer-done` / `offer-failed` / `done` |
 | GET | `/api/metrics` | All saved METRYKA entries, sorted by `recommend` (desc) |
 | DELETE | `/api/metrics/:convId` | Delete the metric entry of a conversation |
+| GET | `/api/backup` | Download a ZIP of the whole `data/` directory (config incl. API keys, conversations, RAG files, metrics) with a `gem-backup.json` manifest |
+| POST | `/api/restore` | Restore from a backup ZIP (multipart `file`); requires the `gem-backup.json` manifest, wipes and replaces all current data |
 
 Chat requests (`preview`, `chat`, `chat/stream`, `context-size`) accept
 `{ messages, modelIndex, selectedFiles, conversationId }` — the RAG file

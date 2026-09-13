@@ -406,6 +406,7 @@
         <button class="btn secondary" id="bulkBtn" style="flex:1">Bulk analysis</button>
         <button class="btn secondary" id="metricsBtn" style="flex:1">Metrics</button>
       </div>
+      <button class="btn secondary" id="backupBtn" style="width:100%; margin-top:8px">Backup &amp; restore</button>
     </div>
 
     <div class="section">
@@ -456,6 +457,29 @@
       <button class="btn" id="sendBtn">Send</button>
     </div>
   </main>
+
+  <div class="overlay" id="backupOverlay">
+    <div class="overlay-box" style="max-width:520px">
+      <div class="overlay-head">
+        <div><h2>Backup &amp; restore</h2><div class="meta">Full app data: config (incl. API keys), conversations, RAG files, metrics</div></div>
+        <button class="btn secondary" id="backupClose">&#x2715;</button>
+      </div>
+      <div class="overlay-body" style="white-space:normal">
+        <p style="margin:0 0 10px; font-size:13px; color:#4b5563">Download a ZIP snapshot of the whole <code>data/</code> directory, or restore the app state from a previous backup (replaces all current data).</p>
+        <div class="upload-row">
+          <button class="btn" id="backupDownload" style="flex:1">Download backup (.zip)</button>
+        </div>
+        <div style="margin-top:12px; border-top:1px solid #e2e7ec; padding-top:12px">
+          <label style="font-size:12px; color:#6b7280">Restore from backup (.zip)</label>
+          <input type="file" id="backupRestoreFile" accept=".zip" style="margin-top:4px" />
+        </div>
+        <div id="backupStatus" style="margin-top:8px; font-size:12px; color:#6b7280"></div>
+      </div>
+      <div class="overlay-foot">
+        <button class="btn secondary" id="backupCancel">Close</button>
+      </div>
+    </div>
+  </div>
 
   <div class="overlay" id="offerPreviewOverlay" style="z-index:1100">
     <div class="overlay-box" style="max-width:820px">
@@ -1895,6 +1919,58 @@ let streamingActive = false; // a model response is being streamed
     document.getElementById('bulkClose').addEventListener('click', closeBulkDialog);
     document.getElementById('bulkCancel').addEventListener('click', closeBulkDialog);
     bulkOverlay.addEventListener('click', (e) => { if (e.target === bulkOverlay) closeBulkDialog(); });
+
+    // ================= Backup & restore =================
+    const backupOverlay = document.getElementById('backupOverlay');
+    const backupStatus = document.getElementById('backupStatus');
+    document.getElementById('backupBtn').addEventListener('click', () => {
+      backupStatus.textContent = '';
+      backupOverlay.classList.add('show');
+    });
+    document.getElementById('backupClose').addEventListener('click', () => backupOverlay.classList.remove('show'));
+    document.getElementById('backupCancel').addEventListener('click', () => backupOverlay.classList.remove('show'));
+    backupOverlay.addEventListener('click', (e) => { if (e.target === backupOverlay) backupOverlay.classList.remove('show'); });
+    document.getElementById('backupDownload').addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        const r = await fetch('/api/backup');
+        if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || r.status); }
+        const blob = await r.blob();
+        const cd = r.headers.get('Content-Disposition') || '';
+        const mfn = cd.match(/filename="([^"]+)"/) || cd.match(/filename=([^;]+)/);
+        const name = mfn ? mfn[1] : 'gem-backup.zip';
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = name; a.click();
+        URL.revokeObjectURL(url);
+        backupStatus.textContent = 'Backup downloaded (' + Math.round(blob.size / 1024) + ' kB).';
+      } catch (err) {
+        backupStatus.textContent = 'Backup failed: ' + err.message;
+      }
+      btn.disabled = false;
+    });
+    document.getElementById('backupRestoreFile').addEventListener('change', async (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      if (!confirm('Restoring replaces ALL current data (config with API keys, conversations, RAG files, metrics).\n\nContinue?')) {
+        e.target.value = '';
+        return;
+      }
+      backupStatus.textContent = 'Restoring...';
+      const fd = new FormData();
+      fd.append('file', f, f.name);
+      try {
+        const r = await fetch('/api/restore', { method: 'POST', body: fd });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || r.status);
+        backupStatus.textContent = 'Restored ' + d.restored + ' files. Reloading...';
+        setTimeout(() => location.reload(), 1200);
+      } catch (err) {
+        backupStatus.textContent = 'Restore failed: ' + err.message;
+      }
+      e.target.value = '';
+    });
 
     // ================= Offer preview =================
     const offerPreviewOverlay = document.getElementById('offerPreviewOverlay');

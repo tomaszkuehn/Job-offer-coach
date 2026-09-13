@@ -1386,6 +1386,84 @@ app.delete("/api/metrics/:convId", (req, res) => {
   saveMetrics(store);
   res.json({ ok: true });
 });
+// ---- Full backup / restore (zip of data/: config, conversations, uploads, metrics) ----
+const BACKUP_MANIFEST = "gem-backup.json";
+
+function listDataFiles(dir, base) {
+  const out = [];
+  if (!fs.existsSync(dir)) return out;
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, e.name);
+    const rel = base ? base + "/" + e.name : e.name;
+    if (e.isDirectory()) out.push(...listDataFiles(full, rel));
+    else out.push(rel);
+  }
+  return out;
+}
+
+app.get("/api/backup", async (req, res) => {
+  try {
+    const zip = new JSZip();
+    const rels = listDataFiles(DATA_DIR, "").filter((f) => f !== BACKUP_MANIFEST);
+    for (const rel of rels) {
+      zip.file(rel, fs.readFileSync(path.join(DATA_DIR, rel)));
+    }
+    zip.file(BACKUP_MANIFEST, JSON.stringify({
+      app: "job-offer-ai-chat",
+      createdAt: new Date().toISOString(),
+      files: rels.length
+    }, null, 2));
+    const buf = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", "attachment; filename=\"gem-backup-" + stamp + ".zip\"");
+    res.send(buf);
+  } catch (e) {
+    res.status(500).json({ error: "Backup failed: " + e.message });
+  }
+});
+
+app.post("/api/restore", upload.single("file"), (req, res) => {
+  (async () => {
+    try {
+    const p = req.file ? req.file.path : null;
+    if (!p) return res.status(400).json({ error: "No file" });
+    const zip = await JSZip.loadAsync(fs.readFileSync(p));
+    fs.unlinkSync(p);
+    // Validate: manifest must exist.
+    if (!zip.file(BACKUP_MANIFEST)) {
+      return res.status(400).json({ error: "Not a GEM backup (missing " + BACKUP_MANIFEST + ")" });
+    }
+    const entries = [];
+    zip.forEach((relPath, entry) => {
+      if (entry.dir) return;
+      if (relPath === BACKUP_MANIFEST) return;
+      // Path traversal guard: only allow paths within data/ tree.
+      const norm = path.posix.normalize(relPath);
+      if (norm.startsWith("..") || path.isAbsolute(norm)) return;
+      entries.push({ rel: norm });
+    });
+    if (!entries.length) return res.status(400).json({ error: "Backup is empty" });
+    // Wipe current data (keep the data dir itself).
+    for (const e of fs.readdirSync(DATA_DIR, { withFileTypes: true })) {
+      const full = path.join(DATA_DIR, e.name);
+      if (e.isDirectory()) fs.rmSync(full, { recursive: true, force: true });
+      else fs.unlinkSync(full);
+    }
+    let written = 0;
+    for (const e of entries) {
+      const dest = path.join(DATA_DIR, e.rel);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      const content = await zip.file(e.rel).async("nodebuffer");
+      fs.writeFileSync(dest, content);
+      written++;
+    }
+    res.json({ ok: true, restored: written });
+    } catch (e) {
+      res.status(500).json({ error: "Restore failed: " + e.message });
+    }
+  })();
+});
 // ---- Chat ----
 app.post('/api/chat', async (req, res) => {
   const { messages, modelIndex, selectedFiles, conversationId } = req.body;
