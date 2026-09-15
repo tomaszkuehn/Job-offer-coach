@@ -526,7 +526,7 @@ app.post('/api/conversations', (req, res) => {
     messages,
     selectedFiles: keptFiles,
     modelIndex: (modelIndex !== undefined ? modelIndex : null),
-    tags: (prev && prev.tags) ? prev.tags : { matchPct: null, german: null, status: null }
+    tags: (prev && prev.tags) ? prev.tags : { matchPct: null, german: null, status: null, satisfactionPct: null }
   };
   fs.writeFileSync(path.join(convDir, 'conversation.json'), JSON.stringify(conv, null, 2));
 
@@ -557,7 +557,7 @@ function analyzeConversationTags(conv) {
   const allTexts = [...assistantTexts].reverse();
   const joined = allTexts.join('\n');
 
-  const tags = { matchPct: null, german: null, status: null };
+  const tags = { matchPct: null, german: null, status: null, satisfactionPct: null };
 
   // Match %: first message (newest first) that states an interview chance.
   for (const text of allTexts) {
@@ -596,6 +596,12 @@ function normalizeTagsInput(body) {
     if (isNaN(pct) || pct < 0 || pct > 100) return null;
     out.matchPct = pct;
   }
+  if (body.satisfactionPct === null || body.satisfactionPct === '') out.satisfactionPct = null;
+  else if (body.satisfactionPct !== undefined) {
+    const pct = parseInt(body.satisfactionPct, 10);
+    if (isNaN(pct) || pct < 0 || pct > 100) return null;
+    out.satisfactionPct = pct;
+  }
   if (body.german !== undefined) {
     if (body.german === null || body.german === '') out.german = null;
     else if (['required', 'not_required'].includes(body.german)) out.german = body.german;
@@ -625,6 +631,8 @@ app.post('/api/conversations/:id/tags', (req, res) => {
     matchPct: patch.matchPct !== undefined ? patch.matchPct : (conv.tags && conv.tags.matchPct !== undefined ? conv.tags.matchPct : null),
     german: patch.german !== undefined ? patch.german : (conv.tags && conv.tags.german !== undefined ? conv.tags.german : null),
     status: patch.status !== undefined ? patch.status : (conv.tags ? (conv.tags.status !== undefined ? conv.tags.status : (conv.tags.applied ? 'applied' : (conv.tags.notApplying ? 'not_applying' : null))) : null),
+    // auto-filled from METRYKA (bulk analysis); preserved unless explicitly sent
+    satisfactionPct: patch.satisfactionPct !== undefined ? patch.satisfactionPct : (conv.tags && conv.tags.satisfactionPct !== undefined ? conv.tags.satisfactionPct : null),
     manual: true
   };
   conv.tags = tags;
@@ -978,6 +986,37 @@ function saveMetrics(m) {
   fs.writeFileSync(METRICS_FILE, JSON.stringify(m, null, 2));
 }
 
+// Auto-fill satisfactionPct tags from stored METRYKA entries (one pass at boot).
+function backfillSatisfactionTags() {
+  try {
+    const store = loadMetrics();
+    if (!store.entries || !store.entries.length) return;
+    const index = loadConversationsIndex();
+    let indexChanged = false;
+    for (const e of store.entries) {
+      if (!e.metrics || e.metrics.satisfaction === null || e.metrics.satisfaction === undefined) continue;
+      const conv = loadConversation(e.convId);
+      if (!conv) continue;
+      if (!conv.tags) conv.tags = { matchPct: null, german: null, status: null, satisfactionPct: null };
+      if (conv.tags.satisfactionPct === undefined) conv.tags.satisfactionPct = null;
+      const missing = conv.tags.satisfactionPct === null;
+      if (missing) {
+        conv.tags.satisfactionPct = e.metrics.satisfaction;
+        fs.writeFileSync(path.join(CONVERSATIONS_DIR, e.convId, 'conversation.json'), JSON.stringify(conv, null, 2));
+      }
+      const entry = index.find((c) => c.id === e.convId);
+      if (entry && JSON.stringify(entry.tags) !== JSON.stringify(conv.tags)) {
+        entry.tags = conv.tags;
+        indexChanged = true;
+      }
+    }
+    if (indexChanged) saveConversationsIndex(index);
+    console.log('satisfaction tags backfilled from metrics.json');
+  } catch (e) {
+    console.log('satisfaction backfill skipped: ' + e.message);
+  }
+}
+
 function htmlToText(html) {
   return String(html)
     .replace(/<script[\s\S]*?<\/script>/gi, '')
@@ -1252,11 +1291,11 @@ async function runBulkOffer(offer, ragFiles, modelIndex) {
         id: convIdNew, name: "Bulk analysis...", createdAt: now0, updatedAt: now0,
         messages: [], selectedFiles: ragFilesKept,
         modelIndex: (modelIndex !== undefined ? modelIndex : null),
-        tags: { matchPct: null, german: null, status: null }
+        tags: { matchPct: null, german: null, status: null, satisfactionPct: null }
       }, null, 2));
       const index0 = loadConversationsIndex();
       index0.unshift({ id: convIdNew, name: "Bulk analysis...", createdAt: now0, updatedAt: now0,
-        messageCount: 0, tags: { matchPct: null, german: null, status: null } });
+        messageCount: 0, tags: { matchPct: null, german: null, status: null, satisfactionPct: null } });
       saveConversationsIndex(index0);
       convId = convIdNew;
       // Ask the model (non-stream; full reply in one response).
@@ -1285,11 +1324,15 @@ async function runBulkOffer(offer, ragFiles, modelIndex) {
       if (met && met.metrics.interview !== null) {
         full.tags = { ...full.tags, matchPct: met.metrics.interview };
       }
+      if (met && met.metrics.satisfaction !== null && met.metrics.satisfaction !== undefined) {
+        full.tags = { ...full.tags, satisfactionPct: met.metrics.satisfaction };
+      }
       fs.writeFileSync(path.join(convDir, "conversation.json"), JSON.stringify(full, null, 2));
       const index = loadConversationsIndex();
       const entry = index.find((c) => c.id === convId);
       if (entry) { entry.name = name; entry.updatedAt = now; entry.messageCount = messages.length;
         if (met && met.metrics.interview !== null) entry.tags.matchPct = met.metrics.interview;
+        if (met && met.metrics.satisfaction !== null && met.metrics.satisfaction !== undefined) entry.tags.satisfactionPct = met.metrics.satisfaction;
         saveConversationsIndex(index);
       }
       // Record the metric.
@@ -1597,5 +1640,6 @@ app.post('/api/context-size', async (req, res) => {
 });
 
 app.listen(PORT, () => {
+  backfillSatisfactionTags();
   console.log(`App running at http://localhost:${PORT}`);
 });

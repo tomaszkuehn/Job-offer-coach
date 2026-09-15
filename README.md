@@ -108,12 +108,17 @@ Click **Save configuration** (the button pulses red when there are unsaved chang
   Each list entry displays the conversation's **creation date and time**
   (`dd/mm/yyyy, hh:mm`) under the name.
 - **🏷 tags** — each conversation can carry optional tags shown as badges on
-  the list: **match probability** (interview chance, %), **German requirement**
-(`DE required` / `no DE`), and the application status (**to apply** /
-**applied** / **not applying**). Open the tag editor with the 🏷 button and
-either fill the fields manually or press **Suggest from content** — the server
-scans the conversation for the newest interview-chance percentage, German
-requirement statements, and "applied" / "don't apply" verdicts.
+  the list: **match probability** — interview chance, badge prefixed **I** (`I 35%`),
+  **job satisfaction** — % auto-filled from the METRYKA metric of bulk analysis,
+  badge prefixed **S** (`S 70%`), **German requirement**
+  (`DE required` / `no DE`), and the application status (**to apply** /
+  **applied** / **not applying**). Open the tag editor with the 🏛 button and
+  either fill the fields manually or press **Suggest from content** — the server
+  scans the conversation for the newest interview-chance percentage, German
+  requirement statements, and "applied" / "don't apply" verdicts (satisfaction
+  comes from metrics.json and is backfilled at server start; the search box
+  also has an **to apply ▾** filter chip that narrows the list to conversations
+  tagged `to_apply`).
 - A model response keeps **streaming in the background** when you switch to another conversation (or start a new one) — when the stream finishes, the reply is appended to the conversation it belongs to and saved automatically.
 - The **preview overlay** is keyboard-driven: **Enter** sends, **Esc** cancels.
 - **Duplicate-offer warning** — when the submitted message resembles the first message of an already-analyzed conversation (≥ 70 % similarity), the preview shows a warning listing those conversations with their match percentages. The send itself is never blocked. Similarity takes the **max** of whole-text token overlap (Jaccard) and **5-word-sequence containment**, so offers with a different header/intro (same body from another source) are still caught.
@@ -187,7 +192,7 @@ on PATH).
 | GET | `/api/conversations/:id` | Get a conversation (read-only; does not touch global config) |
 | POST | `/api/conversations` | Create or update a conversation (`id` optional); bumps `updatedAt` only when content changes |
 | POST | `/api/conversations/:id/rename` | Rename a conversation |
-| POST | `/api/conversations/:id/tags` | Set conversation tags (`{ matchPct, german, status }`; `matchPct` 0–100 or `null`, `german` = `required` / `not_required` / `null`, `status` = `to_apply` / `applied` / `not_applying` / `null`) |
+| POST | `/api/conversations/:id/tags` | Set conversation tags (`{ matchPct, satisfactionPct, german, status }`; `matchPct` / `satisfactionPct` 0–100 or `null` (satisfaction is auto-filled from METRYKA and backfilled at server start), `german` = `required` / `not_required` / `null`, `status` = `to_apply` / `applied` / `not_applying` / `null`) |
 | POST | `/api/conversations/:id/tags/analyze` | Suggest tags from conversation content (does not save) |
 | DELETE | `/api/conversations/:id` | Delete a conversation |
 | POST | `/api/export-package` | Extract CV + cover letters from the latest package in a conversation and convert them to ODT (`{ conversationId }`); returns `207` with a `failed` list on partial success |

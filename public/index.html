@@ -48,6 +48,34 @@
     .conv-tags .na { color: #a12b2b; border-color: #efc4c4; background: #fdf3f3; }
 .conv-tags .ap { color: #1e7e34; border-color: #b7dfc2; background: #f0faf2; }
 .conv-tags .ta { color: #6d28d9; border-color: #ddd6fe; background: #f5f3ff; }
+.conv-tags .sat { color: #155e75; border-color: #a5d8e8; background: #f0f9fd; }
+.conv-tags .sat-low { color: #a12b2b; border-color: #efc4c4; background: #fdf3f3; }
+
+#convToApplyFilter.active { color: #6d28d9; border-color: #ddd6fe; background: #f5f3ff; font-weight: 600; }
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #6d28d9;
+  background: #faf9ff;
+  border: 1px dashed #b9a6f0;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s, border-color .15s;
+}
+.filter-chip:hover { background: #f5f3ff; border-color: #8b5cf6; }
+.filter-chip.active {
+  color: #fff;
+  background: #7c3aed;
+  border: 1px solid #7c3aed;
+  box-shadow: 0 1px 4px rgba(124, 58, 237, .35);
+}
+.filter-chip.active::after { content: ' ✓'; }
     .tag-btn {
       border: none; background: none; cursor: pointer; font-size: 12px;
       color: #9aa5b1; padding: 2px 4px; flex-shrink: 0;
@@ -400,7 +428,10 @@
     <div class="section">
       <h2>Conversations</h2>
       <div id="convList"></div>
-      <input type="text" id="convSearch" autocomplete="off" placeholder="Search titles or message contents…" style="width:100%; margin-top:8px" />
+      <div style="display:flex; gap:6px; margin-top:8px">
+        <input type="text" id="convSearch" autocomplete="off" placeholder="Search titles or message contents…" style="width:100%; flex:1; margin-top:0" />
+        <button id="convToApplyFilter" class="filter-chip" title="Show only conversations tagged 'to apply'">to apply ▾</button>
+      </div>
       <button class="btn secondary" id="newConvBtn" style="width:100%; margin-top:8px">+ New conversation</button>
       <div class="upload-row" style="margin-top:8px">
         <button class="btn secondary" id="bulkBtn" style="flex:1">Bulk analysis</button>
@@ -571,6 +602,8 @@
         </div>
         <label>Match probability (interview), %</label>
         <input type="number" id="tagPct" autocomplete="off" min="0" max="100" placeholder="e.g. 35" />
+        <label>Job satisfaction, % <span style="color:#9aa5b1">(auto from metrics)</span></label>
+        <input type="number" id="tagSat" autocomplete="off" min="0" max="100" placeholder="e.g. 60" />
         <label>German language</label>
         <select id="tagGerman" autocomplete="off">
           <option value="">— unknown / not discussed —</option>
@@ -1061,7 +1094,15 @@ let streamingActive = false; // a model response is being streamed
         if (t.matchPct !== null && t.matchPct !== undefined) {
           const b = document.createElement('span');
           b.className = 'conv-tag ' + (t.matchPct < 30 ? 'pct-low' : 'pct');
-          b.textContent = t.matchPct + '%';
+          b.textContent = 'I ' + t.matchPct + '%';
+          b.title = 'Interview chance';
+          tagsRow.appendChild(b);
+        }
+        if (t.satisfactionPct !== null && t.satisfactionPct !== undefined) {
+          const b = document.createElement('span');
+          b.className = 'conv-tag sat' + (t.satisfactionPct < 30 ? ' sat-low' : '');
+          b.textContent = 'S ' + t.satisfactionPct + '%';
+          b.title = 'Job satisfaction (from metrics)';
           tagsRow.appendChild(b);
         }
         if (t.german === 'required') {
@@ -1114,6 +1155,7 @@ let streamingActive = false; // a model response is being streamed
     const tagOverlay = document.getElementById('tagOverlay');
     const tagConvName = document.getElementById('tagConvName');
     const tagPctEl = document.getElementById('tagPct');
+    const tagSatEl = document.getElementById('tagSat');
     const tagGermanEl = document.getElementById('tagGerman');
     const tagStatusEl = document.getElementById('tagStatus');
     let tagEditingId = null;
@@ -1123,6 +1165,7 @@ let streamingActive = false; // a model response is being streamed
       tagConvName.textContent = c.name;
       const t = c.tags || {};
       tagPctEl.value = (t.matchPct !== null && t.matchPct !== undefined) ? t.matchPct : '';
+      tagSatEl.value = (t.satisfactionPct !== null && t.satisfactionPct !== undefined) ? t.satisfactionPct : '';
       tagGermanEl.value = t.german || '';
       tagStatusEl.value = t.status || (t.applied ? 'applied' : (t.notApplying ? 'not_applying' : ''));
       tagOverlay.classList.add('show');
@@ -1204,6 +1247,7 @@ let streamingActive = false; // a model response is being streamed
       const pctRaw = tagPctEl.value.trim();
       const body = {
         matchPct: pctRaw === '' ? null : parseInt(pctRaw, 10),
+        satisfactionPct: tagSatEl.value.trim() === '' ? null : parseInt(tagSatEl.value, 10),
         german: tagGermanEl.value || null,
         status: tagStatusEl.value || null
       };
@@ -1240,8 +1284,24 @@ let streamingActive = false; // a model response is being streamed
         const res = await fetch('/api/conversations');
         list = await res.json();
       }
+      if (toApplyFilterOn) {
+        list = list.filter((c) => {
+          const t = c.tags || {};
+          const st = t.status || (t.applied ? 'applied' : (t.notApplying ? 'not_applying' : null));
+          return st === 'to_apply';
+        });
+      }
       renderConversations(list);
     }
+
+    // 'to apply' tag filter
+    let toApplyFilterOn = false;
+    const convToApplyFilterEl = document.getElementById('convToApplyFilter');
+    convToApplyFilterEl.addEventListener('click', () => {
+      toApplyFilterOn = !toApplyFilterOn;
+      convToApplyFilterEl.classList.toggle('active', toApplyFilterOn);
+      loadConversations(convSearchEl.value);
+    });
 
     // Conversation search: debounced server search across titles and bodies
     let convSearchTimer = null;
