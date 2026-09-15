@@ -52,6 +52,22 @@ npm start
 
 Open in your browser: http://localhost:3000
 
+### Installer (Windows)
+
+Build a distributable package with:
+
+```bash
+powershell -ExecutionPolicy Bypass -File tools\make-installer.ps1
+```
+
+This produces `dist\GEM-Setup-<version>.zip` (app files + installer, no `node_modules`/`data`). To install, unzip it and double-click `install.cmd`, or run:
+
+```bash
+powershell -ExecutionPolicy Bypass -File tools\install.ps1 [-InstallDir <path>] [-NoStartup] [-NoStart]
+```
+
+Default install dir is `%LOCALAPPDATA%\GEM`. The installer detects Node.js (same nvm-aware logic as the tray; offers `winget` install of Node LTS if missing), runs `npm ci --omit=dev`, writes an `uninstall.ps1` (stops server + tray, removes the startup shortcut and install dir), creates the logon autostart shortcut and starts the tray. `data/` is never touched on reinstall/upgrade.
+
 ### Auto-start with tray icon
 
 `tray-app.ps1` runs at Windows logon (hidden window, shortcut in `shell:startup\GEM Tray.lnk`). The tray icon shows the server state — green = running, red = stopped (checked every 5 s). Left-click opens the app; right-click menu: **Open GEM / Start – Restart server / Stop server / Exit tray**. If the server is not running at logon, the script starts it. A mutex (`GEMTrayLauncher`) prevents duplicate tray instances.
