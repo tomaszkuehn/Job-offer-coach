@@ -56,6 +56,8 @@ Open in your browser: http://localhost:3000
 
 `tray-app.ps1` runs at Windows logon (hidden window, shortcut in `shell:startup\GEM Tray.lnk`). The tray icon shows the server state — green = running, red = stopped (checked every 5 s). Left-click opens the app; right-click menu: **Open GEM / Start – Restart server / Stop server / Exit tray**. If the server is not running at logon, the script starts it. A mutex (`GEMTrayLauncher`) prevents duplicate tray instances.
 
+The tray locates `node.exe` via `PATH`, standard install locations, and nvm setups (`NVM_SYMLINK`, `NVM_HOME`, `%APPDATA%\nvm`, `%LOCALAPPDATA%\Author Software\nvm`, plus a recursive scan of nvm version dirs as a last resort). Diagnostics are logged to `%TEMP%\GEM-tray.log`.
+
 ## Configuration
 
 In the sidebar:

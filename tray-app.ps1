@@ -6,6 +6,44 @@ Add-Type -AssemblyName System.Drawing
 $gemDir = 'D:\kody\GEM'
 $gemUrl = 'http://localhost:3000'
 $script:running = $true
+$script:trayLog = Join-Path $env:TEMP 'GEM-tray.log'
+
+function Write-TrayLog([string]$msg) {
+  try { Add-Content -LiteralPath $script:trayLog -Value ("{0:yyyy-MM-dd HH:mm:ss} {1}" -f (Get-Date), $msg) -ErrorAction SilentlyContinue } catch {}
+}
+
+function Get-NodeExe {
+  $c = Get-Command node.exe -ErrorAction SilentlyContinue
+  if ($c -and $c.Source) { return $c.Source }
+  $c = Get-Command node -ErrorAction SilentlyContinue
+  if ($c -and $c.Source) { return $c.Source }
+  $candidates = @(
+    (Join-Path ${env:ProgramFiles} 'nodejs\node.exe'),
+    (Join-Path ${env:ProgramFiles(x86)} 'nodejs\node.exe'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\nodejs\node.exe'),
+    'C:\Program Files\nodejs\node.exe'
+  )
+  if ($env:NVM_SYMLINK) { $candidates += (Join-Path $env:NVM_SYMLINK 'node.exe') }
+  if ($env:NVM_HOME) { $candidates += (Join-Path $env:NVM_HOME '.nodejs\node.exe') }
+  $candidates += @(
+    (Join-Path $env:APPDATA 'nvm\.nodejs\node.exe'),
+    (Join-Path $env:LOCALAPPDATA 'Author Software\nvm\.nodejs\node.exe'),
+    (Join-Path $env:APPDATA 'nvm\node.exe')
+  )
+  foreach ($p in $candidates) {
+    if ($p -and (Test-Path -LiteralPath $p)) { return $p }
+  }
+  # last resort: search nvm version dirs
+  $roots = @($env:NVM_HOME, (Join-Path $env:APPDATA 'nvm'), (Join-Path $env:LOCALAPPDATA 'Author Software\nvm')) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+  foreach ($root in $roots) {
+    $hit = Get-ChildItem -LiteralPath $root -Filter node.exe -Recurse -Depth 1 -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($hit) { return $hit.FullName }
+  }
+  return $null
+}
+
+$script:nodeExe = Get-NodeExe
+Write-TrayLog ("tray started; nodeExe=" + ($script:nodeExe | Out-String).Trim())
 
 $created = $false
 $mutex = New-Object System.Threading.Mutex($true, 'GEMTrayLauncher', [ref]$created)
@@ -19,16 +57,27 @@ function Test-GemRunning {
 }
 
 function Start-Gem {
+  if (-not $script:nodeExe) {
+    Write-TrayLog 'Start-Gem: node.exe not found (not in PATH nor in standard install locations)'
+    return $false
+  }
   $c = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
   if ($c) {
     Stop-Process -Id $c[0].OwningProcess -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 800
   }
-  Start-Process node -ArgumentList 'server.js' -WorkingDirectory $gemDir -WindowStyle Minimized
+  try {
+    Start-Process -FilePath $script:nodeExe -ArgumentList 'server.js' -WorkingDirectory $script:gemDir -WindowStyle Minimized -ErrorAction Stop
+    Write-TrayLog 'Start-Gem: node process launched'
+  } catch {
+    Write-TrayLog ('Start-Gem: Start-Process failed: ' + $_.Exception.Message)
+    return $false
+  }
   for ($i = 0; $i -lt 20; $i++) {
     Start-Sleep -Milliseconds 500
-    if (Test-GemRunning) { return $true }
+    if (Test-GemRunning) { Write-TrayLog 'Start-Gem: server is up'; return $true }
   }
+  Write-TrayLog 'Start-Gem: server did not respond within 10s'
   return $false
 }
 
@@ -55,19 +104,22 @@ $iconOn = New-GemIcon ([System.Drawing.Color]::FromArgb(34, 197, 94))
 $iconOff = New-GemIcon ([System.Drawing.Color]::FromArgb(239, 68, 68))
 
 $notify = New-Object System.Windows.Forms.NotifyIcon
-$notify.Icon = $iconOn
-$notify.Text = 'GEM - running'
+$notify.Icon = $iconOff
+$notify.Text = 'GEM - starting...'
 $notify.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 
 $openItem = $menu.Items.Add('Open GEM')
-$openItem.add_Click({ Start-Process $gemUrl })
+$openItem.add_Click({ Start-Process $script:gemUrl })
 
 $restartItem = $menu.Items.Add('Start / Restart server')
 $restartItem.add_Click({
   if (Start-Gem) { $script:running = $true; $script:notify.Icon = $script:iconOn; $script:notify.Text = 'GEM - running' }
-  else { $script:running = $false; $script:notify.Icon = $script:iconOff; $script:notify.Text = 'GEM - stopped' }
+  else {
+    $script:running = $false; $script:notify.Icon = $script:iconOff; $script:notify.Text = 'GEM - stopped'
+    $script:notify.ShowBalloonTip(5000, 'GEM', 'Could not start server - details in %TEMP%\GEM-tray.log', [System.Windows.Forms.ToolTipIcon]::Error)
+  }
 })
 
 $stopItem = $menu.Items.Add('Stop server')
@@ -89,7 +141,7 @@ $exitItem.add_Click({
 
 $notify.ContextMenuStrip = $menu
 $notify.add_Click({
-  if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Start-Process $gemUrl }
+  if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Start-Process $script:gemUrl }
 })
 
 $timer = New-Object System.Windows.Forms.Timer
@@ -104,7 +156,14 @@ $timer.add_Tick({
 })
 $timer.Start()
 
-if (-not (Test-GemRunning)) { Start-Gem | Out-Null }
+# Honest initial state: reflect reality instead of assuming "running".
+$script:running = Test-GemRunning
+if (-not $script:running) { $script:running = Start-Gem }
+$notify.Icon = if ($script:running) { $iconOn } else { $iconOff }
+$notify.Text = if ($script:running) { 'GEM - running' } else { 'GEM - stopped' }
+if (-not $script:running) {
+  $notify.ShowBalloonTip(5000, 'GEM', 'Could not start server - details in %TEMP%\GEM-tray.log', [System.Windows.Forms.ToolTipIcon]::Error)
+}
 
 [System.Windows.Forms.Application]::Run((New-Object System.Windows.Forms.ApplicationContext))
 $mutex.ReleaseMutex()
