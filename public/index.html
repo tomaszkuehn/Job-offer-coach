@@ -50,6 +50,12 @@
 .conv-tags .ta { color: #6d28d9; border-color: #ddd6fe; background: #f5f3ff; }
 .conv-tags .sat { color: #155e75; border-color: #a5d8e8; background: #f0f9fd; }
 .conv-tags .sat-low { color: #a12b2b; border-color: #efc4c4; background: #fdf3f3; }
+.metrics-table .ta { color: #6d28d9; border-color: #ddd6fe; background: #f5f3ff; }
+.metrics-table .na { color: #a12b2b; border-color: #efc4c4; background: #fdf3f3; }
+.metrics-table .ap { color: #1e7e34; border-color: #b7dfc2; background: #f0faf2; }
+.metrics-table td.st-cell { cursor: pointer; }
+.metrics-table td.st-cell:hover { background: #f0f7ff; }
+.metrics-table td.st-cell .conv-tag { pointer-events: none; }
 
 .filter-chip {
   display: inline-flex;
@@ -2167,7 +2173,9 @@ let streamingActive = false; // a model response is being streamed
       thead.innerHTML = '<tr><th>Recommend</th><th>Company</th><th>Position</th><th>Status</th><th>Interview</th><th>Employment</th><th>Role</th><th>Satisf.</th><th>Salary</th><th>Date</th></tr>';
       tbl.appendChild(thead);
       const tbody = document.createElement('tbody');
-      const statusLabels = { to_apply: 'to apply', applied: 'applied', not_applying: 'no apply' };
+      const statusLabels = { to_apply: 'to apply', applied: 'applied', not_applying: 'not applying' };
+      const statusColors = { to_apply: 'ta', applied: 'ap', not_applying: 'na' };
+      const statusCycle = [null, 'to_apply', 'not_applying'];
       entries.forEach((e) => {
         const m = e.metrics || {};
         const tr = document.createElement('tr');
@@ -2180,6 +2188,35 @@ let streamingActive = false; // a model response is being streamed
           if (ci === 0) td.className = 'mrec';
           td.textContent = c;
           tr.appendChild(td);
+        });
+        // Status cell: click cycles to apply -> not applying -> clear (saved via /tags)
+        const stTd = tr.children[3];
+        stTd.className = 'st-cell';
+        stTd.title = 'Click: tag "to apply" \u2192 "not applying" \u2192 clear';
+        const renderBadge = (st) => {
+          stTd.innerHTML = '';
+          const badge = document.createElement('span');
+          badge.className = 'conv-tag ' + (statusColors[st] || '');
+          badge.textContent = st ? (statusLabels[st] || st) : '+ tag';
+          stTd.appendChild(badge);
+        };
+        renderBadge(e.status || null);
+        stTd.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          const cur = statusCycle.indexOf(e.status || null);
+          const next = statusCycle[(cur + 1) % statusCycle.length];
+          try {
+            const r = await fetch('/api/conversations/' + e.convId + '/tags', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: next })
+            });
+            if (!r.ok) throw new Error(r.status);
+            e.status = next || '';
+            renderBadge(next);
+          } catch (_) {
+            alert('Failed to set status.');
+          }
         });
         tr.addEventListener('click', async () => {
           metricsOverlay.classList.remove('show');

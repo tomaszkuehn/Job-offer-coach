@@ -677,6 +677,14 @@ app.post('/api/conversations/:id/tags', (req, res) => {
     entry.tags = tags;
     saveConversationsIndex(index);
   }
+  // Keep the metrics view in sync (it renders entry.status from metrics.json).
+  const mstore = loadMetrics();
+  const mentry = mstore.entries.find((en) => en.convId === id);
+  if (mentry) {
+    mentry.status = tags.status || '';
+    mentry.tags = tags;
+    saveMetrics(mstore);
+  }
   res.json({ ok: true, tags });
 });
 
