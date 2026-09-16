@@ -51,8 +51,6 @@
 .conv-tags .sat { color: #155e75; border-color: #a5d8e8; background: #f0f9fd; }
 .conv-tags .sat-low { color: #a12b2b; border-color: #efc4c4; background: #fdf3f3; }
 
-#convToApplyFilter.active { color: #6d28d9; border-color: #ddd6fe; background: #f5f3ff; font-weight: 600; }
-
 .filter-chip {
   display: inline-flex;
   align-items: center;
@@ -427,10 +425,14 @@
 
     <div class="section">
       <h2>Conversations</h2>
+      <div id="convFilterBar" style="display:flex; gap:6px; margin-bottom:8px">
+        <button class="filter-chip" data-status="to_apply" title="Show only conversations tagged 'to apply'">to apply</button>
+        <button class="filter-chip" data-status="applied" title="Show only conversations tagged 'applied'">applied</button>
+        <button class="filter-chip" data-status="not_applying" title="Show only conversations tagged 'not applying'">not applying</button>
+      </div>
       <div id="convList"></div>
       <div style="display:flex; gap:6px; margin-top:8px">
         <input type="text" id="convSearch" autocomplete="off" placeholder="Search titles or message contents…" style="width:100%; flex:1; margin-top:0" />
-        <button id="convToApplyFilter" class="filter-chip" title="Show only conversations tagged 'to apply'">to apply ▾</button>
       </div>
       <button class="btn secondary" id="newConvBtn" style="width:100%; margin-top:8px">+ New conversation</button>
       <div class="upload-row" style="margin-top:8px">
@@ -1030,7 +1032,7 @@ let streamingActive = false; // a model response is being streamed
         d.className = 'status';
         d.textContent = convSearchEl.value.trim()
           ? 'No conversations match the search'
-          : 'No saved conversations';
+          : (convStatusFilters.size ? 'No conversations match the selected filters' : 'No saved conversations');
         convListEl.appendChild(d);
         return;
       }
@@ -1284,22 +1286,30 @@ let streamingActive = false; // a model response is being streamed
         const res = await fetch('/api/conversations');
         list = await res.json();
       }
-      if (toApplyFilterOn) {
+      if (convStatusFilters.size) {
         list = list.filter((c) => {
           const t = c.tags || {};
           const st = t.status || (t.applied ? 'applied' : (t.notApplying ? 'not_applying' : null));
-          return st === 'to_apply';
+          return st !== null && convStatusFilters.has(st);
         });
       }
       renderConversations(list);
     }
 
-    // 'to apply' tag filter
-    let toApplyFilterOn = false;
-    const convToApplyFilterEl = document.getElementById('convToApplyFilter');
-    convToApplyFilterEl.addEventListener('click', () => {
-      toApplyFilterOn = !toApplyFilterOn;
-      convToApplyFilterEl.classList.toggle('active', toApplyFilterOn);
+    // Status filter chips (OR-combined) above the conversation list.
+    const convStatusFilters = new Set();
+    const convFilterBar = document.getElementById('convFilterBar');
+    function resetConvFilters() {
+      convStatusFilters.clear();
+      convFilterBar.querySelectorAll('.filter-chip').forEach((b) => b.classList.remove('active'));
+    }
+    convFilterBar.addEventListener('click', (e) => {
+      const btn = e.target.closest('.filter-chip');
+      if (!btn) return;
+      const st = btn.dataset.status;
+      if (convStatusFilters.has(st)) convStatusFilters.delete(st);
+      else convStatusFilters.add(st);
+      btn.classList.toggle('active', convStatusFilters.has(st));
       loadConversations(convSearchEl.value);
     });
 
@@ -1461,6 +1471,7 @@ let streamingActive = false; // a model response is being streamed
       currentConvName = null;
       currentConvModelIndex = null;
       messages = [];
+      resetConvFilters();
       renderChat();
       renderFiles();
       scheduleCtxUpdate();
@@ -1557,7 +1568,21 @@ let streamingActive = false; // a model response is being streamed
       btn.disabled = true;
       status.style.color = '';
       status.textContent = 'Exporting…';
-      const clearLater = (ms) => setTimeout(() => { status.textContent = ''; status.style.color = ''; }, ms);
+      // Export status auto-hides after 15 s or on the next user action.
+      let clearTimer = null;
+      const clearNow = () => {
+        if (clearTimer) { clearTimeout(clearTimer); clearTimer = null; }
+        document.removeEventListener('click', clearNow, true);
+        document.removeEventListener('keydown', clearNow, true);
+        status.textContent = '';
+        status.style.color = '';
+      };
+      const clearLater = (ms) => {
+        if (clearTimer) clearTimeout(clearTimer);
+        clearTimer = setTimeout(clearNow, ms);
+        document.addEventListener('click', clearNow, true);
+        document.addEventListener('keydown', clearNow, true);
+      };
       try {
         const res = await fetch('/api/export-package', {
           method: 'POST',
@@ -1567,8 +1592,19 @@ let streamingActive = false; // a model response is being streamed
         const data = await res.json();
         if (res.ok && !data.failed) {
           status.style.color = '#1e7e34';
-          status.textContent = 'Exported: ' + data.exported.join(', ').replaceAll('_', ' ');
-          clearLater(6000);
+          const reused = data.reused || [];
+          const fresh = data.exported.filter((f) => !reused.includes(f));
+          if (fresh.length && reused.length) {
+            status.textContent = 'Exported: ' + fresh.join(', ').replaceAll('_', ' ')
+              + ' · unchanged, already exported: ' + reused.join(', ').replaceAll('_', ' ');
+          } else if (reused.length && !fresh.length) {
+            status.style.color = '#4b5563';
+            status.textContent = 'Identical files already exist — nothing new exported: '
+              + reused.join(', ').replaceAll('_', ' ');
+          } else {
+            status.textContent = 'Exported: ' + data.exported.join(', ').replaceAll('_', ' ');
+          }
+          clearLater(15000);
         } else if (res.ok && data.failed) {
           // Partial success: some documents could not be written
           status.style.color = '#b25e09';
@@ -2128,16 +2164,17 @@ let streamingActive = false; // a model response is being streamed
       const tbl = document.createElement('table');
       tbl.className = 'metrics-table';
       const thead = document.createElement('thead');
-      thead.innerHTML = '<tr><th>Recommend</th><th>Company</th><th>Position</th><th>Interview</th><th>Employment</th><th>Role</th><th>Satisf.</th><th>Salary</th><th>Date</th></tr>';
+      thead.innerHTML = '<tr><th>Recommend</th><th>Company</th><th>Position</th><th>Status</th><th>Interview</th><th>Employment</th><th>Role</th><th>Satisf.</th><th>Salary</th><th>Date</th></tr>';
       tbl.appendChild(thead);
       const tbody = document.createElement('tbody');
+      const statusLabels = { to_apply: 'to apply', applied: 'applied', not_applying: 'no apply' };
       entries.forEach((e) => {
         const m = e.metrics || {};
         const tr = document.createElement('tr');
         tr.className = 'clickable';
         tr.title = 'Open the conversation';
         const fmt = (v) => (v === null || v === undefined) ? '\u2014' : v + '%';
-        const cells = [fmt(m.recommend), e.company || '\u2013', e.jobTitle || '\u2013', fmt(m.interview), fmt(m.employment), fmt(m.role), fmt(m.satisfaction), fmt(m.salary), (e.createdAt || '').slice(0, 10)];
+        const cells = [fmt(m.recommend), e.company || '\u2013', e.jobTitle || '\u2013', e.status ? (statusLabels[e.status] || e.status) : '\u2013', fmt(m.interview), fmt(m.employment), fmt(m.role), fmt(m.satisfaction), fmt(m.salary), (e.createdAt || '').slice(0, 10)];
         cells.forEach((c, ci) => {
           const td = document.createElement('td');
           if (ci === 0) td.className = 'mrec';

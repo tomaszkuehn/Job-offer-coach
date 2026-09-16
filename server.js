@@ -528,6 +528,39 @@ app.post('/api/conversations', (req, res) => {
     modelIndex: (modelIndex !== undefined ? modelIndex : null),
     tags: (prev && prev.tags) ? prev.tags : { matchPct: null, german: null, status: null, satisfactionPct: null }
   };
+
+  // METRYKA auto-extraction for manually driven chats (mirrors bulk analysis):
+  // a FRESH reply (last assistant message) carrying a METRYKA block updates the
+  // tags and the stored metrics entry. Older METRYKA blocks never overwrite
+  // anything on plain re-saves, and manual tag edits survive normal browsing.
+  const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
+  if (changed && lastAssistant && /METRYKA/i.test(String(lastAssistant.content || ''))) {
+    const met = extractMetryka(lastAssistant.content);
+    if (met) {
+      if (!conv.tags) conv.tags = { matchPct: null, german: null, status: null, satisfactionPct: null };
+      if (met.metrics.interview !== null) conv.tags.matchPct = met.metrics.interview;
+      if (met.metrics.satisfaction !== null && met.metrics.satisfaction !== undefined) conv.tags.satisfactionPct = met.metrics.satisfaction;
+      const store = loadMetrics();
+      const existing = store.entries.find((e) => e.convId === convId);
+      const meta = existing ? existing : deriveOfferMeta(messages);
+      const mEntry = {
+        convId,
+        convName: name,
+        createdAt: existing ? existing.createdAt : updatedAt,
+        company: existing ? existing.company : (meta.company || ''),
+        jobTitle: existing ? existing.jobTitle : (meta.jobTitle || ''),
+        location: existing ? existing.location : (meta.location || ''),
+        url: existing ? existing.url : (meta.url || ''),
+        status: (conv.tags && conv.tags.status) || (existing ? existing.status : '') || '',
+        metrics: met.metrics,
+        raw: met.raw
+      };
+      if (existing) store.entries[store.entries.indexOf(existing)] = mEntry;
+      else store.entries.push(mEntry);
+      saveMetrics(store);
+    }
+  }
+
   fs.writeFileSync(path.join(convDir, 'conversation.json'), JSON.stringify(conv, null, 2));
 
   const entry = {
@@ -867,6 +900,7 @@ app.post('/api/export-package', async (req, res) => {
   const contentHash = (text) => crypto.createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12);
 
   const exported = [];
+  const reused = [];
   const tmpFiles = [];
 
   // Pandoc's ODT writer emits table cells with fo:border="none" — patch
@@ -898,6 +932,7 @@ app.post('/api/export-package', async (req, res) => {
       if (manifest[kind] && manifest[kind].hash === hash && fs.existsSync(path.join(outDir, manifest[kind].file))) {
         // Same content as last export -> reuse the existing file
         exported.push(manifest[kind].file);
+        reused.push(manifest[kind].file);
         continue;
       }
       const base = `${safeName}_${kindFile(kind)}`;
@@ -956,6 +991,7 @@ app.post('/api/export-package', async (req, res) => {
       return res.status(207).json({
         ok: true,
         exported,
+        reused,
         failed,
         outDir: 'moje_dok/odt'
       });
@@ -969,7 +1005,7 @@ app.post('/api/export-package', async (req, res) => {
   if (!exported.length) {
     return res.status(422).json({ error: 'No CV/CoverLetter sections found in the package' });
   }
-  res.json({ ok: true, exported, outDir: 'moje_dok/odt' });
+  res.json({ ok: true, exported, reused, outDir: 'moje_dok/odt' });
 });
 
 // ---- Bulk analysis (offer file -> parsed offers -> automated conversations) ----
@@ -1227,6 +1263,27 @@ function parseOfferFile(text) {
   return all;
 }
 
+// Best-effort company/job title/location/url from a manual chat's first user
+// message (bulk flow stores these from the parsed offer; manual chats have no
+// offer object, so we infer from the message text).
+function deriveOfferMeta(messages) {
+  const first = messages.find((m) => m.role === 'user');
+  const text = String((first && first.content) || '');
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return { company: '', jobTitle: '', location: '', url: '' };
+  const jobTitle = lines[0].slice(0, 160);
+  let company = '';
+  let location = '';
+  let url = '';
+  const emp = lines.find((l) => /^employers?\s*:/i.test(l));
+  if (emp) company = emp.replace(/^employers?\s*:\s*/i, '').slice(0, 120);
+  else if (lines.length > 1 && lines[1].length <= 120 && !/^https?:/i.test(lines[1])) company = lines[1].slice(0, 120);
+  if (lines.length > 2 && lines[2].length <= 120 && !/^https?:/i.test(lines[2])) location = lines[2].slice(0, 120);
+  const ul = lines.find((l) => /^https?:\/\//i.test(l));
+  if (ul) url = ul;
+  return { company, jobTitle, location, url };
+}
+
 // Extract the METRYKA block from an assistant reply.
 function extractMetryka(text) {
   if (!text) return null;
@@ -1346,6 +1403,7 @@ async function runBulkOffer(offer, ragFiles, modelIndex) {
           jobTitle: offer.title || "",
           location: offer.location || "",
           url: offer.url || "",
+          status: offer.status || "",
           metrics: met.metrics,
           raw: met.raw
         });
