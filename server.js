@@ -888,6 +888,14 @@ app.post('/api/export-package', async (req, res) => {
   ];
   const kindFile = (kind) => { for (const p of parts) if (p[0] === kind) return p[2] || kind; return kind; };
 
+  // Segoe UI reference doc: the 2023/24 Calibri redesign ships a contextual
+  // "ti"/"fi" ligature that LibreOffice's PDF export/print path renders with a
+  // zero-advance glyph (letters visually fuse). Segoe UI has no such ligature
+  // and exports cleanly. Falls back to the Calibri doc if missing.
+  const refDoc = path.join(__dirname, 'tools',
+    fs.existsSync(path.join(__dirname, 'tools', 'reference-segoui.odt'))
+      ? 'reference-segoui.odt' : 'reference-calibri.odt');
+
   // Re-exporting the SAME content must not create a new indexed version.
   // A per-conversation manifest maps each part to the content hash of its
   // last export; identical content reuses the existing file. The manifest is
@@ -941,7 +949,6 @@ app.post('/api/export-package', async (req, res) => {
         fs.writeFileSync(mdTmp, `# ${stripEmDashes(title)}\n\n${stripEmDashes(content)}`, 'utf8');
         tmpFiles.push(mdTmp);
         const odt = path.join(outDir, base + '.odt');
-        const refDoc = path.join(__dirname, 'tools', 'reference-calibri.odt');
         const args = [mdTmp, '--from=gfm'];
         if (fs.existsSync(refDoc)) args.push(`--reference-doc=${refDoc}`);
         args.push('-o', odt);
@@ -966,7 +973,6 @@ app.post('/api/export-package', async (req, res) => {
         try {
           fs.writeFileSync(mdAlt, `# ${stripEmDashes(title)}\n\n${stripEmDashes(content)}`, 'utf8');
           tmpFiles.push(mdAlt);
-          const refDoc = path.join(__dirname, 'tools', 'reference-calibri.odt');
           const args = [mdAlt, '--from=gfm'];
           if (fs.existsSync(refDoc)) args.push(`--reference-doc=${refDoc}`);
           args.push('-o', odtAlt);

@@ -149,10 +149,13 @@ on PATH).
   suggests closing the file and re-exporting.
 - Output goes to `moje_dok/odt/` ("moje dokumenty" = *my documents* — Polish
   folder name kept for local continuity); styling comes from a bundled reference
-  document (`tools/reference-calibri.odt`): Calibri body font with Calibri Light
-  headings, 10.5 pt base size, compact paragraph spacing, table borders (pandoc emits
+  document (`tools/reference-segoui.odt`): Segoe UI body font with Segoe UI
+  Semibold headings, 10.5 pt base size, compact paragraph spacing, table borders (pandoc emits
   borderless tables — the server patches them in), single-line horizontal
   rules, **no page numbers** (empty footer), and `—`/`–` converted to plain `-`.
+  (Segoe UI replaced Calibri in Sept 2026: the 2023/24 Calibri redesign ships a
+  contextual `ti`/`fi` ligature that LibreOffice's PDF export renders with a
+  zero-advance glyph, visually fusing letters.)
 
 ## Project structure
 
@@ -162,7 +165,8 @@ on PATH).
 ├── package.json
 ├── tools/
 │   ├── extract-package.js         # CLI version of the package export (pandoc)
-│   └── reference-calibri.odt      # Pandoc reference doc: Calibri fonts, sizes, spacing, HR style
+│   ├── reference-segoui.odt       # Pandoc reference doc: Segoe UI fonts, sizes, spacing, HR style
+│   └── reference-calibri.odt      # Legacy Calibri reference doc (fallback)
 ├── public/
 │   └── index.html                 # Frontend (single file: config panel + chat UI)
 ├── moje_dok/                      # Local output ("my documents", git-ignored)
