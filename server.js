@@ -709,6 +709,15 @@ app.post('/api/conversations/:id/rename', (req, res) => {
   if (entry) entry.name = name;
   saveConversationsIndex(index);
 
+  // Keep the metrics view in sync (renamed conversations must not keep the
+  // old convName in metrics.json).
+  const mstore = loadMetrics();
+  const mentry = mstore.entries.find((en) => en.convId === id);
+  if (mentry) {
+    mentry.convName = name;
+    saveMetrics(mstore);
+  }
+
   res.json({ ok: true });
 });
 
@@ -1037,6 +1046,29 @@ function saveMetrics(m) {
 }
 
 // Auto-fill satisfactionPct tags from stored METRYKA entries (one pass at boot).
+// Repair stale metrics entries: convName captured before a rename keeps the
+// default "Conversation" (rename did not sync metrics.json in older versions).
+function backfillMetricsConvNames() {
+  try {
+    const store = loadMetrics();
+    if (!store.entries || !store.entries.length) return;
+    const index = loadConversationsIndex();
+    let changed = false;
+    for (const e of store.entries) {
+      const entry = index.find((c) => c.id === e.convId);
+      if (!entry) continue;
+      const stale = !e.convName || e.convName === 'Conversation' || /^Conversation \d{1,2}\//.test(e.convName);
+      if (stale && entry.name && entry.name !== e.convName) {
+        e.convName = entry.name;
+        changed = true;
+      }
+    }
+    if (changed) { saveMetrics(store); console.log('metrics convNames backfilled'); }
+  } catch (e) {
+    console.log('metrics convName backfill skipped: ' + e.message);
+  }
+}
+
 function backfillSatisfactionTags() {
   try {
     const store = loadMetrics();
@@ -1713,5 +1745,6 @@ app.post('/api/context-size', async (req, res) => {
 
 app.listen(PORT, () => {
   backfillSatisfactionTags();
+  backfillMetricsConvNames();
   console.log(`App running at http://localhost:${PORT}`);
 });
