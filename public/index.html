@@ -549,6 +549,7 @@
           <button class="filter-chip" data-bulk-status="to-consider">to consider</button>
           <button class="filter-chip" data-bulk-status="german">german</button>
           <button class="filter-chip" data-bulk-status="duplicates">duplicates</button>
+          <button class="filter-chip" data-bulk-status="checked">checked</button>
           <button class="filter-chip" data-bulk-status="">no tag</button>
           <input type="search" id="bulkSearch" placeholder="Search title / company…" style="font-size:12px; padding:4px 8px; border:1px solid #d6dbe1; border-radius:6px; width:180px" />
           <span style="flex:1"></span>
@@ -1940,6 +1941,7 @@ let streamingActive = false; // a model response is being streamed
     function bulkVisibleOffers() {
       if (bulkStatusFilter === null) return bulkParsed;
       if (bulkStatusFilter === 'duplicates') return bulkParsed.filter((o) => o.duplicate);
+      if (bulkStatusFilter === 'checked') return bulkParsed.filter((o) => o._checked);
       return bulkParsed.filter((o) => (o.status || '').trim().toLowerCase() === bulkStatusFilter);
     }
 
