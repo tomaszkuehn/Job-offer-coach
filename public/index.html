@@ -1894,15 +1894,21 @@ let streamingActive = false; // a model response is being streamed
     let bulkSearch = '';
 
     function openBulkDialog() {
-      bulkParsed = [];
+      // Keep previously loaded offers (and their checked state) until a new
+      // file is selected — reopening the dialog resumes where you left off.
       bulkStatusFilter = null;
       bulkSearch = '';
       document.getElementById('bulkSearch').value = '';
       document.querySelectorAll('#bulkFilterBar .filter-chip').forEach((b) => b.classList.remove('active'));
       bulkFile.value = '';
-      bulkOffersEl.innerHTML = '';
-      bulkMeta.textContent = 'Select one or more offer files (job.txt exports from the LinkedIn extension).';
-      bulkRunBtn.disabled = true;
+      if (!bulkParsed.length) {
+        bulkOffersEl.innerHTML = '';
+        bulkMeta.textContent = 'Select one or more offer files (job.txt exports from the LinkedIn extension).';
+      } else {
+        renderBulkOffers();
+        bulkMeta.textContent = bulkParsed.length + ' offer(s) loaded — pick a new file to replace them.';
+      }
+      bulkRunBtn.disabled = bulkRunning || !bulkParsed.some((o) => o._checked);
       bulkOverlay.classList.add('show');
     }
     function closeBulkDialog() {
@@ -1915,6 +1921,7 @@ let streamingActive = false; // a model response is being streamed
 
     bulkFile.addEventListener('change', async () => {
       if (!bulkFile.files || !bulkFile.files.length) return;
+      // A new file selection REPLACES the previous batch.
       bulkParsed = [];
       bulkOffersEl.innerHTML = '<div class="status">Parsing…</div>';
       for (const f of bulkFile.files) {
