@@ -1525,12 +1525,18 @@ async function runBulkOffer(offer, ragFiles, modelIndex) {
       if (met && met.metrics.satisfaction !== null && met.metrics.satisfaction !== undefined) {
         full.tags = { ...full.tags, satisfactionPct: met.metrics.satisfaction };
       }
+      // Sync the CSV status into the conversation tags so the conversation
+      // list shows the same badge the bulk row carried.
+      const csvStatus = String(offer.status || "").trim().toLowerCase();
+      if (csvStatus === "apply") full.tags.status = "to_apply";
+      else if (csvStatus === "applied") full.tags.status = "applied";
+      else if (csvStatus === "ignored") full.tags.status = "not_applying";
+      if (csvStatus === "german") full.tags.german = "required";
       fs.writeFileSync(path.join(convDir, "conversation.json"), JSON.stringify(full, null, 2));
       const index = loadConversationsIndex();
       const entry = index.find((c) => c.id === convId);
       if (entry) { entry.name = name; entry.updatedAt = now; entry.messageCount = messages.length;
-        if (met && met.metrics.interview !== null) entry.tags.matchPct = met.metrics.interview;
-        if (met && met.metrics.satisfaction !== null && met.metrics.satisfaction !== undefined) entry.tags.satisfactionPct = met.metrics.satisfaction;
+        entry.tags = { ...full.tags };
         saveConversationsIndex(index);
       }
       // Record the metric.
@@ -1620,6 +1626,16 @@ app.post("/api/bulk/run", async (req, res) => {
   }
   send({ event: "done", stopped: stopRequested });
   res.end();
+});
+
+// Re-flag parsed offers against ALL stored conversations. The bulk dialog
+// calls this while a run is in progress so conversations created by the run
+// are detected as duplicates (and their CSV tags synced) immediately.
+app.post("/api/bulk/refresh", (req, res) => {
+  const { offers } = req.body;
+  if (!Array.isArray(offers)) return res.status(400).json({ error: "No offers" });
+  flagStoredOffers(offers);
+  res.json({ ok: true, offers });
 });
 
 // Metrics list sorted by "recommend" (desc), newest first as tiebreak.

@@ -2068,6 +2068,30 @@ let streamingActive = false; // a model response is being streamed
       if (st) { st.className = 'bulk-status ' + cls; st.textContent = text || cls; }
     }
 
+    // Index (into bulkParsed) of the offer currently being analyzed — used to
+    // restore the 'analyzing' chip after a re-render.
+    let bulkActiveIdx = -1;
+
+    // Re-check duplicates against stored conversations (picks up conversations
+    // created by the running analysis) and re-render the list.
+    async function refreshBulkDuplicates() {
+      if (!bulkParsed.length) return;
+      try {
+        const r = await fetch('/api/bulk/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ offers: bulkParsed })
+        });
+        if (!r.ok) return;
+        const d = await r.json();
+        if (Array.isArray(d.offers)) {
+          bulkParsed.forEach((o, i) => { if (d.offers[i]) o.duplicate = d.offers[i].duplicate; });
+          renderBulkOffers();
+          if (bulkActiveIdx >= 0) setBulkStatus(bulkActiveIdx, 'running', 'analyzing');
+        }
+      } catch (_) { /* non-fatal */ }
+    }
+
     function setBulkRunLabel(state) {
       bulkRunBtn.innerHTML = state === 'analyzing'
         ? '<span class="spin"></span>Analyzing…'
@@ -2123,18 +2147,25 @@ let streamingActive = false; // a model response is being streamed
               bulkMeta.textContent = 'Running 0 / ' + ev.total + ' (RAG files: ' + ev.ragFiles + ')';
             } else if (ev.event === 'offer-start') {
               cur++;
-              if (cur < selected.length) setBulkStatus(selected[cur]._i, 'running', 'analyzing');
+              if (cur < selected.length) {
+                setBulkStatus(selected[cur]._i, 'running', 'analyzing');
+                bulkActiveIdx = selected[cur]._i;
+              }
             } else if (ev.event === 'offer-done') {
               const rec = (ev.metrics && ev.metrics.recommend != null) ? ('done · ' + ev.metrics.recommend + '%') : 'done';
               if (cur >= 0 && cur < selected.length) setBulkStatus(selected[cur]._i, 'done', rec);
+              bulkActiveIdx = -1;
               done++;
               bulkMeta.textContent = 'Running ' + done + ' / ' + selected.length;
-              // Live-refresh the conversation list as bulk creates new ones
+              // Live-refresh the conversation list + re-detect duplicates
               loadConversations().catch(() => {});
+              refreshBulkDuplicates();
             } else if (ev.event === 'offer-failed') {
               if (cur >= 0 && cur < selected.length) setBulkStatus(selected[cur]._i, 'failed', 'failed: ' + String(ev.error || '').slice(0, 40));
+              bulkActiveIdx = -1;
               bulkMeta.textContent = 'Running ' + done + ' / ' + selected.length;
               loadConversations().catch(() => {});
+              refreshBulkDuplicates();
             }
           }
         }
@@ -2159,6 +2190,10 @@ let streamingActive = false; // a model response is being streamed
     document.getElementById('bulkClose').addEventListener('click', closeBulkDialog);
     document.getElementById('bulkCancel').addEventListener('click', closeBulkDialog);
     bulkOverlay.addEventListener('click', (e) => { if (e.target === bulkOverlay) closeBulkDialog(); });
+    // Re-detect duplicates when the dialog reopens after a finished run.
+    bulkOverlay.addEventListener('transitionend', () => {
+      if (bulkOverlay.classList.contains('show') && bulkParsed.length && !bulkRunning) refreshBulkDuplicates();
+    });
 
     // ================= Backup & restore =================
     const backupOverlay = document.getElementById('backupOverlay');
