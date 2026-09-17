@@ -542,6 +542,18 @@
       </div>
       <div class="overlay-body" id="bulkBody" style="white-space:normal">
         <input type="file" id="bulkFile" accept=".csv,.json,.txt,.html,.htm" multiple />
+        <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-top:8px" id="bulkFilterBar">
+          <span style="font-size:11px; color:#7b8794">Filter:</span>
+          <button class="filter-chip" data-bulk-status="apply">apply</button>
+          <button class="filter-chip" data-bulk-status="applied">applied</button>
+          <button class="filter-chip" data-bulk-status="to-consider">to consider</button>
+          <button class="filter-chip" data-bulk-status="german">german</button>
+          <button class="filter-chip" data-bulk-status="ignored">ignored</button>
+          <button class="filter-chip" data-bulk-status="">no tag</button>
+          <span style="flex:1"></span>
+          <button class="btn secondary" id="bulkCheckAll" style="font-size:11px; padding:4px 10px">Check visible</button>
+          <button class="btn secondary" id="bulkUncheckAll" style="font-size:11px; padding:4px 10px">Uncheck visible</button>
+        </div>
         <div id="bulkOffers" style="margin-top:10px; max-height:340px; overflow:auto"></div>
       </div>
       <div class="overlay-foot">
@@ -1862,9 +1874,12 @@ let streamingActive = false; // a model response is being streamed
     let bulkParsed = [];
     let bulkRunning = false;
     let bulkAbort = null; // AbortController while a run is in flight
+    let bulkStatusFilter = null; // null = all, '' = no tag, otherwise CSV status
 
     function openBulkDialog() {
       bulkParsed = [];
+      bulkStatusFilter = null;
+      document.querySelectorAll('#bulkFilterBar .filter-chip').forEach((b) => b.classList.remove('active'));
       bulkFile.value = '';
       bulkOffersEl.innerHTML = '';
       bulkMeta.textContent = 'Select one or more offer files (job.txt exports from the LinkedIn extension).';
@@ -1896,6 +1911,16 @@ let streamingActive = false; // a model response is being streamed
       renderBulkOffers();
     });
 
+    function bulkVisibleOffers() {
+      if (bulkStatusFilter === null) return bulkParsed;
+      return bulkParsed.filter((o) => (o.status || '').trim().toLowerCase() === bulkStatusFilter);
+    }
+
+    function setBulkVisibleChecked(checked) {
+      bulkVisibleOffers().forEach((o) => { o._checked = checked; });
+      renderBulkOffers();
+    }
+
     function renderBulkOffers() {
       bulkOffersEl.innerHTML = '';
       if (!bulkParsed.length) {
@@ -1903,9 +1928,14 @@ let streamingActive = false; // a model response is being streamed
         bulkRunBtn.disabled = true;
         return;
       }
-      bulkParsed.forEach((o, i) => {
-        // Already-analyzed offers are highlighted and unchecked by default.
-        o._checked = !o.duplicate;
+      const visible = bulkVisibleOffers();
+      if (!visible.length) {
+        bulkOffersEl.innerHTML = '<div class="status">No offers match the filter.</div>';
+        bulkRunBtn.disabled = true;
+        return;
+      }
+      visible.forEach((o) => {
+        const i = bulkParsed.indexOf(o);
         const row = document.createElement('div');
         row.className = 'bulk-offer' + (o.duplicate ? ' duplicate' : '');
         const cb = document.createElement('input');
@@ -1922,6 +1952,13 @@ let streamingActive = false; // a model response is being streamed
           stc.className = 'bo-status';
           stc.textContent = o.status;
           t.appendChild(stc);
+        }
+        if (o.savedAt) {
+          const dt = document.createElement('span');
+          dt.style.cssText = 'margin-left:8px; font-size:10px; color:#7b8794';
+          dt.textContent = o.savedAt.slice(0, 10);
+          dt.title = 'Saved (from CSV/JSON)';
+          t.appendChild(dt);
         }
         const sub = document.createElement('div');
         sub.className = 'bo-sub';
@@ -1946,12 +1983,28 @@ let streamingActive = false; // a model response is being streamed
         row.appendChild(st);
         bulkOffersEl.appendChild(row);
       });
-      bulkMeta.textContent = bulkParsed.length + ' offer(s) found.';
+      const checkedCount = bulkParsed.filter((o) => o._checked).length;
+      const shownChecked = visible.filter((o) => o._checked).length;
+      bulkMeta.textContent = bulkStatusFilter === null
+        ? bulkParsed.length + ' offer(s) found, ' + checkedCount + ' checked.'
+        : visible.length + ' of ' + bulkParsed.length + ' offer(s) shown (' + shownChecked + ' checked visible / ' + checkedCount + ' checked total).';
       refreshBulkRunBtn();
     }
     function refreshBulkRunBtn() {
       bulkRunBtn.disabled = bulkRunning || !bulkParsed.some((o) => o._checked);
     }
+    document.querySelectorAll('#bulkFilterBar .filter-chip').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const val = btn.getAttribute('data-bulk-status');
+        const active = btn.classList.contains('active');
+        document.querySelectorAll('#bulkFilterBar .filter-chip').forEach((b) => b.classList.remove('active'));
+        if (active) { bulkStatusFilter = null; }
+        else { btn.classList.add('active'); bulkStatusFilter = val; }
+        renderBulkOffers();
+      });
+    });
+    document.getElementById('bulkCheckAll').addEventListener('click', () => setBulkVisibleChecked(true));
+    document.getElementById('bulkUncheckAll').addEventListener('click', () => setBulkVisibleChecked(false));
 
     function setBulkStatus(i, cls, text) {
       const st = document.getElementById('bulk-status-' + i);
