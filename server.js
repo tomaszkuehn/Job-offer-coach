@@ -729,6 +729,11 @@ app.delete('/api/conversations/:id', (req, res) => {
   }
   const index = loadConversationsIndex().filter((c) => c.id !== id);
   saveConversationsIndex(index);
+  // The metric entry belongs to the conversation — remove it too.
+  const mstore = loadMetrics();
+  const before = mstore.entries.length;
+  mstore.entries = mstore.entries.filter((e) => e.convId !== id);
+  if (mstore.entries.length !== before) saveMetrics(mstore);
   res.json({ ok: true });
 });
 
@@ -1054,8 +1059,15 @@ function backfillMetricsConvNames() {
   try {
     const store = loadMetrics();
     if (!store.entries || !store.entries.length) return;
-    const index = loadConversationsIndex();
+    // Drop entries whose conversation no longer exists (deleted chats).
+    const alive = store.entries.filter((e) => fs.existsSync(path.join(CONVERSATIONS_DIR, e.convId, 'conversation.json')));
     let changed = false;
+    if (alive.length !== store.entries.length) {
+      console.log('removed ' + (store.entries.length - alive.length) + ' orphaned metric entries');
+      store.entries = alive;
+      changed = true;
+    }
+    const index = loadConversationsIndex();
     for (const e of store.entries) {
       const entry = index.find((c) => c.id === e.convId);
       if (!entry) continue;
