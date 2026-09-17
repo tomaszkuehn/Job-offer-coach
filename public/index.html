@@ -281,12 +281,13 @@
     .op-value a { color:#2563eb; text-decoration:none; font-weight:500 }
     .op-value.applied { color:#1d4ed8 } .op-value.apply { color:#15803d }
     .op-value.to-consider { color:#a16207 } .op-value.ignored { color:#b91c1c }
-    .metrics-table { width:100%; border-collapse:collapse; font-size:12px }
+    .metrics-table { width:100%; border-collapse:collapse; font-size:12px; table-layout:auto }
     .metrics-table th, .metrics-table td { padding:6px 8px; border-bottom:1px solid #e5e9ee; text-align:left; white-space:nowrap }
     .metrics-table th { background:#f4f6f8; font-size:11px; color:#4b5563; text-transform:uppercase; letter-spacing:.03em }
     .metrics-table tr.clickable { cursor:pointer }
     .metrics-table tr.clickable:hover { background:#f0f7ff }
     .metrics-table .mrec { font-weight:700 }
+    .metrics-table .cname { max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#52606d }
     .dup-warning {
       margin: 10px 0 14px; padding: 10px 12px; border-radius: 8px;
       background: #fdf8e2; border: 1px solid #e8d18a; color: #6b5300;
@@ -551,7 +552,7 @@
   </div>
 
   <div class="overlay" id="metricsOverlay">
-    <div class="overlay-box" style="max-width:860px">
+    <div class="overlay-box" style="max-width:96vw">
       <div class="overlay-head">
         <div><h2>Saved metrics</h2><div class="meta">Sorted by "Recommendation" (best first)</div></div>
         <button class="btn secondary" id="metricsClose">&#x2715;</button>
@@ -2170,7 +2171,7 @@ let streamingActive = false; // a model response is being streamed
       const tbl = document.createElement('table');
       tbl.className = 'metrics-table';
       const thead = document.createElement('thead');
-      thead.innerHTML = '<tr><th>Recommend</th><th>Company</th><th>Position</th><th>Status</th><th>Interview</th><th>Employment</th><th>Role</th><th>Satisf.</th><th>Salary</th><th>Date</th></tr>';
+      thead.innerHTML = '<tr><th>Recommend</th><th>Company</th><th>Position</th><th>Status</th><th>Interview</th><th>Employment</th><th>Role</th><th>Satisf.</th><th>Salary</th><th>Date</th><th>Conversation</th></tr>';
       tbl.appendChild(thead);
       const tbody = document.createElement('tbody');
       const statusLabels = { to_apply: 'to apply', applied: 'applied', not_applying: 'not applying' };
@@ -2189,6 +2190,11 @@ let streamingActive = false; // a model response is being streamed
           td.textContent = c;
           tr.appendChild(td);
         });
+        const nameTd = document.createElement('td');
+        nameTd.className = 'cname';
+        nameTd.textContent = e.convName || e.convId;
+        nameTd.title = e.convName || e.convId;
+        tr.appendChild(nameTd);
         // Status cell: click cycles to apply -> not applying -> clear (saved via /tags)
         const stTd = tr.children[3];
         stTd.className = 'st-cell';
@@ -2228,9 +2234,9 @@ let streamingActive = false; // a model response is being streamed
       metricsBody.appendChild(tbl);
     }
     document.getElementById('metricsBtn').addEventListener('click', openMetrics);
-    document.getElementById('metricsClose').addEventListener('click', () => metricsOverlay.classList.remove('show'));
-    document.getElementById('metricsCancel').addEventListener('click', () => metricsOverlay.classList.remove('show'));
-    metricsOverlay.addEventListener('click', (e) => { if (e.target === metricsOverlay) metricsOverlay.classList.remove('show'); });
+    document.getElementById('metricsClose').addEventListener('click', () => { metricsOverlay.classList.remove('show'); loadConversations(); });
+    document.getElementById('metricsCancel').addEventListener('click', () => { metricsOverlay.classList.remove('show'); loadConversations(); });
+    metricsOverlay.addEventListener('click', (e) => { if (e.target === metricsOverlay) { metricsOverlay.classList.remove('show'); loadConversations(); } });
     loadConfig();
     loadConversations();
     scheduleCtxUpdate();
