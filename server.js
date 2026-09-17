@@ -542,15 +542,15 @@ app.post('/api/conversations', (req, res) => {
       if (met.metrics.satisfaction !== null && met.metrics.satisfaction !== undefined) conv.tags.satisfactionPct = met.metrics.satisfaction;
       const store = loadMetrics();
       const existing = store.entries.find((e) => e.convId === convId);
-      const meta = existing ? existing : deriveOfferMeta(messages);
+      const meta = deriveOfferMeta(messages);
       const mEntry = {
         convId,
         convName: name,
         createdAt: existing ? existing.createdAt : updatedAt,
-        company: existing ? existing.company : (meta.company || ''),
-        jobTitle: existing ? existing.jobTitle : (meta.jobTitle || ''),
-        location: existing ? existing.location : (meta.location || ''),
-        url: existing ? existing.url : (meta.url || ''),
+        company: (existing && existing.company) || meta.company || '',
+        jobTitle: (existing && existing.jobTitle) || meta.jobTitle || '',
+        location: (existing && existing.location) || meta.location || '',
+        url: (existing && existing.url) || meta.url || '',
         status: (conv.tags && conv.tags.status) || (existing ? existing.status : '') || '',
         metrics: met.metrics,
         raw: met.raw
@@ -1047,7 +1047,9 @@ function saveMetrics(m) {
 
 // Auto-fill satisfactionPct tags from stored METRYKA entries (one pass at boot).
 // Repair stale metrics entries: convName captured before a rename keeps the
-// default "Conversation" (rename did not sync metrics.json in older versions).
+// default "Conversation" (rename did not sync metrics.json in older versions);
+// missing company/jobTitle are derived from the offer text or the conversation
+// name; missing status comes from the conversation tags.
 function backfillMetricsConvNames() {
   try {
     const store = loadMetrics();
@@ -1062,10 +1064,38 @@ function backfillMetricsConvNames() {
         e.convName = entry.name;
         changed = true;
       }
+      if (!e.status || !e.company || !e.jobTitle) {
+        const conv = loadConversation(e.convId);
+        if (!conv) continue;
+        if (!e.status && conv.tags && conv.tags.status) {
+          e.status = conv.tags.status;
+          changed = true;
+        }
+        if (!e.company || !e.jobTitle) {
+          const meta = deriveOfferMeta(conv.messages || []);
+          if (!e.jobTitle && meta.jobTitle) { e.jobTitle = meta.jobTitle; changed = true; }
+          if (!e.company) {
+            const firstText = String(((conv.messages || []).find((m) => m.role === 'user') || {}).content || '');
+            // LinkedIn paste ("job requisition id" / "posted on"): the second
+            // line is a city, not the company — use the description or name.
+            const linkedinPaste = /job requisition id|^posted on$/im.test(firstText);
+            let company = linkedinPaste ? '' : meta.company;
+            if (!company) {
+              const mm = firstText.match(/\b([A-Z][\w&.'\-]*(?:[ \t]+[A-Z][\w&.'\-]*){0,3})[ \t]+(?:is|are)[ \t]+looking to hire/);
+              if (mm) company = mm[1].trim();
+            }
+            if (!company) {
+              const head = String(entry.name || '').split(/\s*[-\u2014|]\s*/)[0].trim();
+              if (head && head.length <= 40 && /[A-Za-z]/.test(head)) company = head;
+            }
+            if (company) { e.company = company.slice(0, 120); changed = true; }
+          }
+        }
+      }
     }
-    if (changed) { saveMetrics(store); console.log('metrics convNames backfilled'); }
+    if (changed) { saveMetrics(store); console.log('metrics entries backfilled (convName/company/jobTitle/status)'); }
   } catch (e) {
-    console.log('metrics convName backfill skipped: ' + e.message);
+    console.log('metrics backfill skipped: ' + e.message);
   }
 }
 
@@ -1312,19 +1342,22 @@ function parseOfferFile(text) {
 // Best-effort company/job title/location/url from a manual chat's first user
 // message (bulk flow stores these from the parsed offer; manual chats have no
 // offer object, so we infer from the message text).
+const OFFER_NOISE_RE = /^(apply|locations?|time type|posted on|show more|save|insights|report this job|close|done|job requisition id.*|posted \d.*|full time|part time)\.?$/i;
+
 function deriveOfferMeta(messages) {
   const first = messages.find((m) => m.role === 'user');
   const text = String((first && first.content) || '');
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
   if (!lines.length) return { company: '', jobTitle: '', location: '', url: '' };
   const jobTitle = lines[0].slice(0, 160);
+  const rest = lines.slice(1).filter((l) => !OFFER_NOISE_RE.test(l) && !/^https?:/i.test(l));
   let company = '';
   let location = '';
   let url = '';
   const emp = lines.find((l) => /^employers?\s*:/i.test(l));
   if (emp) company = emp.replace(/^employers?\s*:\s*/i, '').slice(0, 120);
-  else if (lines.length > 1 && lines[1].length <= 120 && !/^https?:/i.test(lines[1])) company = lines[1].slice(0, 120);
-  if (lines.length > 2 && lines[2].length <= 120 && !/^https?:/i.test(lines[2])) location = lines[2].slice(0, 120);
+  else if (rest.length && rest[0].length <= 120) company = rest[0].slice(0, 120);
+  if (rest.length > 1 && rest[1].length <= 120) location = rest[1].slice(0, 120);
   const ul = lines.find((l) => /^https?:\/\//i.test(l));
   if (ul) url = ul;
   return { company, jobTitle, location, url };
