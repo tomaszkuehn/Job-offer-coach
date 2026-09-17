@@ -119,6 +119,18 @@
       color: #fff;
     }
     .btn:hover { background: #1d4ed8; }
+    .btn:disabled { cursor: default; opacity: .75 }
+    .btn .spin {
+      display: inline-block;
+      width: 12px; height: 12px;
+      border: 2px solid rgba(255,255,255,.35);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: btnSpin .8s linear infinite;
+      vertical-align: -2px;
+      margin-right: 7px;
+    }
+    @keyframes btnSpin { to { transform: rotate(360deg) } }
     .btn.secondary { background: #e4e7eb; color: #1f2933; }
     .btn.secondary:hover { background: #d3d8de; }
     .file-item {
@@ -2056,12 +2068,21 @@ let streamingActive = false; // a model response is being streamed
       if (st) { st.className = 'bulk-status ' + cls; st.textContent = text || cls; }
     }
 
+    function setBulkRunLabel(state) {
+      bulkRunBtn.innerHTML = state === 'analyzing'
+        ? '<span class="spin"></span>Analyzing…'
+        : 'Run analysis';
+      bulkRunBtn.disabled = state === 'analyzing'
+        ? true
+        : bulkRunning || !bulkParsed.some((o) => o._checked);
+    }
+
     async function runBulk() {
       const selected = bulkParsed.map((o, i) => ({ ...o, _i: i })).filter((o) => o._checked);
       if (!selected.length || bulkRunning) return;
       bulkRunning = true;
       bulkAbort = new AbortController();
-      bulkRunBtn.disabled = true;
+      setBulkRunLabel('analyzing');
       bulkFile.disabled = true;
       bulkMeta.textContent = 'Running 0 / ' + selected.length;      let done = 0;
       try {
@@ -2077,6 +2098,9 @@ let streamingActive = false; // a model response is being streamed
         if (!resp.ok || !resp.body) {
           const d = await resp.json().catch(() => ({}));
           alert('Bulk run failed: ' + (d.error || resp.status));
+          bulkRunning = false;
+          bulkFile.disabled = false;
+          setBulkRunLabel('idle');
           return;
         }
         // Offers run strictly sequentially server-side: the current event
@@ -2105,9 +2129,12 @@ let streamingActive = false; // a model response is being streamed
               if (cur >= 0 && cur < selected.length) setBulkStatus(selected[cur]._i, 'done', rec);
               done++;
               bulkMeta.textContent = 'Running ' + done + ' / ' + selected.length;
+              // Live-refresh the conversation list as bulk creates new ones
+              loadConversations().catch(() => {});
             } else if (ev.event === 'offer-failed') {
               if (cur >= 0 && cur < selected.length) setBulkStatus(selected[cur]._i, 'failed', 'failed: ' + String(ev.error || '').slice(0, 40));
               bulkMeta.textContent = 'Running ' + done + ' / ' + selected.length;
+              loadConversations().catch(() => {});
             }
           }
         }
@@ -2118,7 +2145,7 @@ let streamingActive = false; // a model response is being streamed
       bulkAbort = null;
       bulkRunning = false;
       bulkFile.disabled = false;
-      refreshBulkRunBtn();
+      setBulkRunLabel('idle');
       await loadConversations();
     }
     function requestBulkStop(msg) {
