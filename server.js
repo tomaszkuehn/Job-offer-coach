@@ -1568,13 +1568,18 @@ app.post("/api/bulk/run", async (req, res) => {
   // which would abort the run right after the first offer.
   let stopRequested = false;
   res.on("close", () => { stopRequested = true; });
-  // RAG files from the most recently updated conversation.
-  const index = loadConversationsIndex();
-  const latest = index.slice().sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))[0];
-  let ragFiles = [];
-  if (latest) {
-    const conv = loadConversation(latest.id);
-    if (conv && Array.isArray(conv.selectedFiles)) ragFiles = conv.selectedFiles;
+  // RAG files: the CURRENT global selection (config.selectedFiles) — the
+  // same set every new conversation gets. Falls back to the most recently
+  // updated conversation when the config carries no selection.
+  const cfgForRag = loadConfig();
+  let ragFiles = Array.isArray(cfgForRag.selectedFiles) ? cfgForRag.selectedFiles.slice() : [];
+  if (!ragFiles.length) {
+    const index = loadConversationsIndex();
+    const latest = index.slice().sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))[0];
+    if (latest) {
+      const conv = loadConversation(latest.id);
+      if (conv && Array.isArray(conv.selectedFiles)) ragFiles = conv.selectedFiles;
+    }
   }
   res.setHeader("Content-Type", "application/x-ndjson");
   res.setHeader("Cache-Control", "no-cache");
