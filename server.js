@@ -772,10 +772,13 @@ app.post('/api/export-package', async (req, res) => {
   const RE_CV_NUM = /^4a[\s.:-]/i;
   const RE_CV_WORD = /^CV\b/i;
   const RE_CV_H1 = /^(?:TOMASZ\s+KUEHN|KUEHN)\b/i;
+  // "## 4. CV (...)" — numbered package section carrying the CV
+  const RE_CV_SECTION = /^\d+\s*[.)][^\n]*\bCV\b/i;
   const RE_CL = /^(?:4b[\s.:-]|4c[\s.:-]|Cover\s*Letter|Anschreiben|Bewerbungsschreiben)/i;
   const RE_NUM_SECTION = /^\d+\s*[.)]/;
 
   const isCvStart = (h) => RE_CV_NUM.test(h.norm) || RE_CV_WORD.test(h.norm)
+    || (h.level <= 3 && RE_CV_SECTION.test(h.norm))
     || (h.level === 1 && RE_CV_H1.test(h.norm));
   const isClStart = (h) => RE_CL.test(h.norm);
   // Language of a cover-letter heading: strong German markers only. Weak
@@ -794,16 +797,25 @@ app.post('/api/export-package', async (req, res) => {
   // `start` until the first later heading matching one of the `stop` rules.
   // An enclosing code fence around the document body (```markdown ... ```)
   // is stripped so pandoc does not render literal fence lines.
-  function extractDoc(md, start, stops) {
+  // `refine` optionally moves the start forward to a later heading (e.g. the
+  // "# TOMASZ KUEHN" name line) — used when the CV section heading carries an
+  // editorial preamble that must not end up in the exported document.
+  function extractDoc(md, start, stops, refine) {
     const heads = listHeadings(md);
-    const from = heads.find(start);
-    if (!from) return null;
-    let end = heads.length;
-    for (let i = heads.indexOf(from) + 1; i < heads.length; i++) {
-      if (stops.some((s) => s(heads[i]))) { end = i; break; }
+    const fromIdx = heads.findIndex(start);
+    if (fromIdx === -1) return null;
+    let stopIdx = heads.length;
+    for (let i = fromIdx + 1; i < heads.length; i++) {
+      if (stops.some((s) => s(heads[i]))) { stopIdx = i; break; }
     }
-    const to = end < heads.length ? heads[end].index : md.length;
-    let body = md.slice(from.end, to).trim();
+    let startAt = heads[fromIdx].end;
+    if (refine) {
+      for (let i = fromIdx + 1; i < stopIdx; i++) {
+        if (refine(heads[i])) { startAt = heads[i].index; break; }
+      }
+    }
+    const to = stopIdx < heads.length ? heads[stopIdx].index : md.length;
+    let body = md.slice(startAt, to).trim();
     const fence = body.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n?```?\s*$/i);
     if (fence) body = fence[1].trim();
     return body;
@@ -811,7 +823,8 @@ app.post('/api/export-package', async (req, res) => {
 
   // CV stops at a cover-letter heading or the next numbered analysis section
   // ("## 5. ..."); inner headings (job entries, H1 name line) belong to the CV.
-  const extractCv = (md) => extractDoc(md, isCvStart, [isClStart, isNumberedH2]);
+  const extractCv = (md) => extractDoc(md, isCvStart, [isClStart, isNumberedH2],
+    (h) => h.level === 1 && RE_CV_H1.test(h.norm));
   // A cover letter contains no headings of its own, so ANY next heading that
   // is not another cover-letter marker ends it (drops trailing commentary).
   // A cover-letter heading of the OTHER language also ends it, so the EN
@@ -830,8 +843,20 @@ app.post('/api/export-package', async (req, res) => {
     return m ? m[1] : md;
   }
 
-  const msgHasCv = (m) => extractCv(unwrapCodeFence(m.content)) !== null;
-  const msgHasCl = (m, wantDe) => extractCl(unwrapCodeFence(m.content), wantDe) !== null;
+  // Models also mark document boundaries with BOLD lines instead of headings
+  // ("**TOMASZ KUEHN**", "**COVER LETTER (English)**"). Promote exactly those
+  // lines to headings so the extractors see them; the replacement keeps the
+  // original bold text in the body (only the "# "/"## " prefix is inserted).
+  function normalizeDocMarkers(md) {
+    return md
+      .replace(/^[ \t]*\*\*(Cover\s*Letter\b[^*\n]*)\*\*[ \t]*$/gim, '## **$1**')
+      .replace(/^[ \t]*\*\*(TOMASZ\s+KUEHN)\s*\*\*[ \t]*$/gim, '# **$1**');
+  }
+
+  const prepMd = (m) => normalizeDocMarkers(unwrapCodeFence(m.content || ''));
+
+  const msgHasCv = (m) => extractCv(prepMd(m)) !== null;
+  const msgHasCl = (m, wantDe) => extractCl(prepMd(m), wantDe) !== null;
 
   const latest = (pred) => [...assistants].reverse().find(pred);
 
@@ -902,11 +927,11 @@ app.post('/api/export-package', async (req, res) => {
   }
 
   const mdOf = (m) => (m ? m.content : '');
-  const cvFromPkg = cvMsg ? extractCv(unwrapCodeFence(mdOf(cvMsg))) : null;
+  const cvFromPkg = cvMsg ? extractCv(prepMd(cvMsg)) : null;
   const parts = [
     ['CV', cvFromPkg, 'CV'],
-    ['CoverLetter_EN', clEnMsg ? trimAfterSignature(extractCl(unwrapCodeFence(mdOf(clEnMsg)), false)) : null, 'cover'],
-    ['CoverLetter_DE', clDeMsg ? trimAfterSignature(extractCl(unwrapCodeFence(mdOf(clDeMsg)), true)) : null, 'Anschreiben'],
+    ['CoverLetter_EN', clEnMsg ? trimAfterSignature(extractCl(prepMd(clEnMsg), false)) : null, 'cover'],
+    ['CoverLetter_DE', clDeMsg ? trimAfterSignature(extractCl(prepMd(clDeMsg), true)) : null, 'Anschreiben'],
   ];
   const kindFile = (kind) => { for (const p of parts) if (p[0] === kind) return p[2] || kind; return kind; };
 
