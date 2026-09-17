@@ -550,6 +550,7 @@
           <button class="filter-chip" data-bulk-status="german">german</button>
           <button class="filter-chip" data-bulk-status="duplicates">duplicates</button>
           <button class="filter-chip" data-bulk-status="">no tag</button>
+          <input type="search" id="bulkSearch" placeholder="Search title / company…" style="font-size:12px; padding:4px 8px; border:1px solid #d6dbe1; border-radius:6px; width:180px" />
           <span style="flex:1"></span>
           <button class="btn secondary" id="bulkCheckAll" style="font-size:11px; padding:4px 10px">Check visible</button>
           <button class="btn secondary" id="bulkUncheckAll" style="font-size:11px; padding:4px 10px">Uncheck visible</button>
@@ -1890,10 +1891,13 @@ let streamingActive = false; // a model response is being streamed
     let bulkRunning = false;
     let bulkAbort = null; // AbortController while a run is in flight
     let bulkStatusFilter = null; // null = all, '' = no tag, otherwise CSV status
+    let bulkSearch = '';
 
     function openBulkDialog() {
       bulkParsed = [];
       bulkStatusFilter = null;
+      bulkSearch = '';
+      document.getElementById('bulkSearch').value = '';
       document.querySelectorAll('#bulkFilterBar .filter-chip').forEach((b) => b.classList.remove('active'));
       bulkFile.value = '';
       bulkOffersEl.innerHTML = '';
@@ -1932,8 +1936,19 @@ let streamingActive = false; // a model response is being streamed
       return bulkParsed.filter((o) => (o.status || '').trim().toLowerCase() === bulkStatusFilter);
     }
 
+    function bulkTextMatch(o) {
+      if (!bulkSearch) return true;
+      const hay = [o.title, o.company, o.location, o.url, o.description]
+        .filter(Boolean).join(' ').toLowerCase();
+      return bulkSearch.toLowerCase().split(/\s+/).filter(Boolean).every((t) => hay.includes(t));
+    }
+
+    function bulkFiltered() {
+      return bulkVisibleOffers().filter(bulkTextMatch);
+    }
+
     function setBulkVisibleChecked(checked) {
-      bulkVisibleOffers().forEach((o) => { o._checked = checked; });
+      bulkFiltered().forEach((o) => { o._checked = checked; });
       renderBulkOffers();
     }
 
@@ -1944,9 +1959,9 @@ let streamingActive = false; // a model response is being streamed
         bulkRunBtn.disabled = true;
         return;
       }
-      const visible = bulkVisibleOffers();
+      const visible = bulkFiltered();
       if (!visible.length) {
-        bulkOffersEl.innerHTML = '<div class="status">No offers match the filter.</div>';
+        bulkOffersEl.innerHTML = '<div class="status">' + (bulkParsed.length ? 'No offers match the filter.' : 'No offers found in the selected file(s).') + '</div>';
         bulkRunBtn.disabled = true;
         return;
       }
@@ -2001,7 +2016,8 @@ let streamingActive = false; // a model response is being streamed
       });
       const checkedCount = bulkParsed.filter((o) => o._checked).length;
       const shownChecked = visible.filter((o) => o._checked).length;
-      bulkMeta.textContent = bulkStatusFilter === null
+      const searching = bulkSearch || bulkStatusFilter !== null;
+      bulkMeta.textContent = !searching
         ? bulkParsed.length + ' offer(s) found, ' + checkedCount + ' checked.'
         : visible.length + ' of ' + bulkParsed.length + ' offer(s) shown (' + shownChecked + ' checked visible / ' + checkedCount + ' checked total).';
       refreshBulkRunBtn();
@@ -2021,6 +2037,10 @@ let streamingActive = false; // a model response is being streamed
     });
     document.getElementById('bulkCheckAll').addEventListener('click', () => setBulkVisibleChecked(true));
     document.getElementById('bulkUncheckAll').addEventListener('click', () => setBulkVisibleChecked(false));
+    document.getElementById('bulkSearch').addEventListener('input', (e) => {
+      bulkSearch = e.target.value;
+      renderBulkOffers();
+    });
 
     function setBulkStatus(i, cls, text) {
       const st = document.getElementById('bulk-status-' + i);
