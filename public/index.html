@@ -757,6 +757,18 @@ let streamingActive = false; // a model response is being streamed
       return name.replace(/^([a-f0-9]{8}|\d{10,})_/, '');
     }
 
+    // Uniform RAG: persist the current selection globally (config + ALL
+    // conversations) so every conversation — existing and new — uses it.
+    async function syncRagGlobal() {
+      try {
+        await fetch('/api/rag/apply-all', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ selectedFiles: selectedFiles.slice() })
+        });
+      } catch (_) { /* non-fatal */ }
+    }
+
     function renderFiles() {
       fileListEl.innerHTML = '';
       // RAG list shows THIS conversation's attached files only
@@ -773,6 +785,7 @@ let streamingActive = false; // a model response is being streamed
             selectedFiles = selectedFiles.filter((n) => n !== name);
             renderFiles();
             scheduleCtxUpdate();
+            syncRagGlobal();
           }
         });
         const span = document.createElement('span');
@@ -787,6 +800,7 @@ let streamingActive = false; // a model response is being streamed
           selectedFiles = selectedFiles.filter((n) => n !== name);
           renderFiles();
           scheduleCtxUpdate();
+          syncRagGlobal();
         });
         item.appendChild(label);
         item.appendChild(del);
@@ -1569,6 +1583,7 @@ let streamingActive = false; // a model response is being streamed
       renderFiles();
       scheduleCtxUpdate();
       if (messages.length) await saveConversation();
+      syncRagGlobal();
       setTimeout(() => { fileStatus.textContent = ''; fileStatus.style.color = ''; }, 4000);
     });
 

@@ -266,6 +266,31 @@ app.post('/api/files', upload.array('files'), (req, res) => {
   res.json({ ok: true, files: accepted, reused });
 });
 
+// Apply one RAG selection EVERYWHERE: config + all existing conversations
+// (uniform selection across the whole app).
+app.post('/api/rag/apply-all', (req, res) => {
+  if (!Array.isArray(req.body.selectedFiles)) {
+    return res.status(400).json({ error: 'selectedFiles array required' });
+  }
+  const files = req.body.selectedFiles.map((n) => path.basename(String(n)));
+  const cfg = loadConfig();
+  cfg.selectedFiles = files;
+  saveConfig(cfg);
+  const index = loadConversationsIndex();
+  let updated = 0;
+  for (const entry of index) {
+    const convFile = path.join(CONVERSATIONS_DIR, entry.id, 'conversation.json');
+    if (!fs.existsSync(convFile)) continue;
+    try {
+      const conv = JSON.parse(fs.readFileSync(convFile, 'utf8'));
+      conv.selectedFiles = files.slice();
+      fs.writeFileSync(convFile, JSON.stringify(conv, null, 2));
+      updated++;
+    } catch (_) { /* skip malformed conversation */ }
+  }
+  res.json({ ok: true, updatedConversations: updated });
+});
+
 function cleanFileName(name) {
   // Strip upload timestamp/id prefix like "1788546314711_"
   return name.replace(/^\d{10,}_/, '');
