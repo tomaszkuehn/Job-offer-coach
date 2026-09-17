@@ -273,14 +273,14 @@
     .bo-status.applied { background:#dbeafe; color:#1d4ed8; border-color:#bfdbfe }
     .bo-status.to-consider { background:#fef9c3; color:#a16207; border-color:#fde68a }
     .bo-status.german { background:#f5f3ff; color:#6d28d9; border-color:#ddd6fe }
-    .bo-status.ignored { background:#fee2e2; color:#b91c1c; border-color:#fecaca }
+    .bo-status.duplicates { background:#fdf8e2; color:#854d0e; border-color:#e8d18a }
     #offerPreviewOverlay .overlay-body { max-height:520px; overflow:auto }
     .op-row { display:flex; gap:10px; padding:3px 0; font-size:13px }
     .op-label { flex:0 0 90px; color:#6b7280; font-size:11px; text-transform:uppercase; letter-spacing:.04em; padding-top:2px }
     .op-value { color:#1f2937; font-weight:600; min-width:0; overflow-wrap:anywhere }
     .op-value a { color:#2563eb; text-decoration:none; font-weight:500 }
     .op-value.applied { color:#1d4ed8 } .op-value.apply { color:#15803d }
-    .op-value.to-consider { color:#a16207 } .op-value.ignored { color:#b91c1c }
+    .op-value.to-consider { color:#a16207 } .op-value.duplicates { color:#854d0e }
     .metrics-table { width:100%; border-collapse:collapse; font-size:12px; table-layout:auto }
     .metrics-table th, .metrics-table td { padding:6px 8px; border-bottom:1px solid #e5e9ee; text-align:left; white-space:nowrap }
     .metrics-table th { background:#f4f6f8; font-size:11px; color:#4b5563; text-transform:uppercase; letter-spacing:.03em }
@@ -548,7 +548,7 @@
           <button class="filter-chip" data-bulk-status="applied">applied</button>
           <button class="filter-chip" data-bulk-status="to-consider">to consider</button>
           <button class="filter-chip" data-bulk-status="german">german</button>
-          <button class="filter-chip" data-bulk-status="ignored">ignored</button>
+          <button class="filter-chip" data-bulk-status="duplicates">duplicates</button>
           <button class="filter-chip" data-bulk-status="">no tag</button>
           <span style="flex:1"></span>
           <button class="btn secondary" id="bulkCheckAll" style="font-size:11px; padding:4px 10px">Check visible</button>
@@ -1928,6 +1928,7 @@ let streamingActive = false; // a model response is being streamed
 
     function bulkVisibleOffers() {
       if (bulkStatusFilter === null) return bulkParsed;
+      if (bulkStatusFilter === 'duplicates') return bulkParsed.filter((o) => o.duplicate);
       return bulkParsed.filter((o) => (o.status || '').trim().toLowerCase() === bulkStatusFilter);
     }
 
