@@ -1544,6 +1544,12 @@ let streamingActive = false; // a model response is being streamed
       document.getElementById('systemPrompt').value = cfg.systemPrompt || '';
       // selectedFiles is per-conversation state — loadConfig no longer resets it
       allFiles = cfg.files || [];
+      // Uniform RAG: on startup (fresh page load, no conversation restored
+      // yet) seed the selection from the global config selection so the
+      // RAG panel is never empty after a refresh.
+      if (initializing && !(selectedFiles || []).length && Array.isArray(cfg.selectedFiles)) {
+        selectedFiles = cfg.selectedFiles.slice();
+      }
       renderModelSlots();
       renderModelSwitcher();
       renderFiles();
@@ -2409,7 +2415,8 @@ let streamingActive = false; // a model response is being streamed
     document.getElementById('metricsClose').addEventListener('click', () => { metricsOverlay.classList.remove('show'); loadConversations(); });
     document.getElementById('metricsCancel').addEventListener('click', () => { metricsOverlay.classList.remove('show'); loadConversations(); });
     metricsOverlay.addEventListener('click', (e) => { if (e.target === metricsOverlay) { metricsOverlay.classList.remove('show'); loadConversations(); } });
-    loadConfig();
+    let initializing = true;
+    loadConfig().finally(() => { initializing = false; });
     loadConversations();
     scheduleCtxUpdate();
     renderFiles();
