@@ -1432,9 +1432,11 @@ function extractMetryka(text) {
   const idx = up.indexOf("METRYKA");
   if (idx === -1) return null;
   const tail = String(text).slice(idx, idx + 1500);
-  // Prefer the line containing METRYKA, else the whole tail.
-  const lineMatch = tail.split("\n").find((l) => l.toUpperCase().includes("METRYKA"));
-  const line = lineMatch || tail;
+  // Prefer a line containing METRYKA AND the percentages (the model often
+  // renders a bare "METRYKA" heading on its own line, values 1-2 lines
+  // below); else the first METRYKA line, else the whole tail.
+  const candLines = tail.split("\n").filter((l) => l.toUpperCase().includes("METRYKA"));
+  const line = candLines.find((l) => /\d{1,3}\s*%/.test(l)) || candLines[0] || tail;
   const grab = (re) => {
     const m = line.match(re);
     if (!m) return null;
