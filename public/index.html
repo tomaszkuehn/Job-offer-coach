@@ -1920,6 +1920,9 @@ let streamingActive = false; // a model response is being streamed
       } else {
         renderBulkOffers();
         bulkMeta.textContent = bulkParsed.length + ' offer(s) loaded — pick a new file to replace them.';
+        // Re-detect duplicates against stored conversations — picks up
+        // conversations created by a run since the list was last refreshed.
+        refreshBulkDuplicates();
       }
       bulkRunBtn.disabled = bulkRunning || !bulkParsed.some((o) => o._checked);
       bulkOverlay.classList.add('show');
@@ -2190,10 +2193,6 @@ let streamingActive = false; // a model response is being streamed
     document.getElementById('bulkClose').addEventListener('click', closeBulkDialog);
     document.getElementById('bulkCancel').addEventListener('click', closeBulkDialog);
     bulkOverlay.addEventListener('click', (e) => { if (e.target === bulkOverlay) closeBulkDialog(); });
-    // Re-detect duplicates when the dialog reopens after a finished run.
-    bulkOverlay.addEventListener('transitionend', () => {
-      if (bulkOverlay.classList.contains('show') && bulkParsed.length && !bulkRunning) refreshBulkDuplicates();
-    });
 
     // ================= Backup & restore =================
     const backupOverlay = document.getElementById('backupOverlay');
