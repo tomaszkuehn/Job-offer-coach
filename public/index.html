@@ -1906,6 +1906,16 @@ let streamingActive = false; // a model response is being streamed
     let bulkStatusFilter = null; // null = all, '' = no tag, otherwise CSV status
     let bulkSearch = '';
 
+    // Persist the loaded batch (with checked state) in localStorage so a page
+    // refresh does not lose it — it stays until a new file is selected.
+    function persistBulkOffers() {
+      try { localStorage.setItem('gemBulkOffers', JSON.stringify(bulkParsed)); } catch (_) { /* quota — ignore */ }
+    }
+    try {
+      const savedBulk = JSON.parse(localStorage.getItem('gemBulkOffers') || 'null');
+      if (Array.isArray(savedBulk) && savedBulk.length) bulkParsed = savedBulk;
+    } catch (_) { /* corrupted — start empty */ }
+
     function openBulkDialog() {
       // Keep previously loaded offers (and their checked state) until a new
       // file is selected — reopening the dialog resumes where you left off.
@@ -1950,6 +1960,7 @@ let streamingActive = false; // a model response is being streamed
           else alert('Parse error: ' + (d.error || r.status));
         } catch (e) { alert('Upload failed: ' + e.message); }
       }
+      persistBulkOffers();
       renderBulkOffers();
     });
 
@@ -1973,6 +1984,7 @@ let streamingActive = false; // a model response is being streamed
 
     function setBulkVisibleChecked(checked) {
       bulkFiltered().forEach((o) => { o._checked = checked; });
+      persistBulkOffers();
       renderBulkOffers();
     }
 
@@ -1996,7 +2008,7 @@ let streamingActive = false; // a model response is being streamed
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.checked = o._checked;
-        cb.addEventListener('change', () => { o._checked = cb.checked; refreshBulkRunBtn(); });
+        cb.addEventListener('change', () => { o._checked = cb.checked; persistBulkOffers(); refreshBulkRunBtn(); });
         const main = document.createElement('div');
         main.className = 'bo-main';
         const t = document.createElement('div');
@@ -2089,6 +2101,7 @@ let streamingActive = false; // a model response is being streamed
         const d = await r.json();
         if (Array.isArray(d.offers)) {
           bulkParsed.forEach((o, i) => { if (d.offers[i]) o.duplicate = d.offers[i].duplicate; });
+          persistBulkOffers();
           renderBulkOffers();
           if (bulkActiveIdx >= 0) setBulkStatus(bulkActiveIdx, 'running', 'analyzing');
         }
