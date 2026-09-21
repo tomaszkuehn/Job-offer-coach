@@ -849,9 +849,9 @@ let streamingActive = false; // a model response is being streamed
         });
         const data = await res.json();
         if (res.ok) {
-          const kb = data.chars / 1024;
-          el.textContent = 'ctx: ' + (kb >= 100 ? Math.round(kb) : kb.toFixed(1)) + ' kB';
-          el.title = 'Estimated context: ' + data.chars + ' chars ≈ ' + data.tokens + ' tokens (system prompt + RAG files + conversation)';
+          const tk = data.tokens;
+          el.textContent = 'ctx: ' + (tk >= 1000 ? (tk / 1000).toFixed(tk >= 10000 ? 0 : 1) + 'k' : tk) + ' tok';
+          el.title = 'Estimated context: ~' + data.tokens.toLocaleString('en-US') + ' tokens (' + data.chars + ' chars; system prompt + RAG files + conversation)';
           el.classList.toggle('warn', data.tokens >= 30000 && data.tokens < 60000);
           el.classList.toggle('danger', data.tokens >= 60000);
         }
