@@ -1135,7 +1135,6 @@ let streamingActive = false; // a model response is being streamed
             currentConvId = null;
             currentConvName = null;
             messages = [];
-            chatHighlights = [];
             renderChat();
           }
           await loadConversations();
@@ -1417,19 +1416,18 @@ let streamingActive = false; // a model response is being streamed
         });
         chatEl.scrollTop = chatEl.scrollHeight;
       }
-      applyChatHighlights();
     }
 
     // --- In-memory text highlights (yellow) ---
-    // Highlights live only for the CURRENT conversation: chatHighlights is
-    // reset whenever another conversation is loaded/created. Offsets are
-    // stored in character space over all text nodes of #chat, so highlights
-    // survive message re-renders within the same conversation.
-    let chatHighlights = [];
+    // Highlights are plain DOM <mark> wraps around the live selection. They
+    // vanish naturally when the chat DOM is rebuilt (another conversation,
+    // new chat) — exactly the wanted behavior. Wrapping is non-destructive:
+    // only text nodes are split, element structure is never moved.
 
+    // All text nodes of #chat in document order.
     function chatTextNodes() {
       const walker = document.createTreeWalker(chatEl, NodeFilter.SHOW_TEXT, {
-        acceptNode: (n) => (n.nodeValue.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT)
+        acceptNode: (n) => (n.nodeValue.length ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT)
       });
       const nodes = [];
       let n;
@@ -1437,44 +1435,51 @@ let streamingActive = false; // a model response is being streamed
       return nodes;
     }
 
-    // Convert a DOM (node, offset) point into char offset over chatTextNodes().
-    function chatPointToOffset(node, offset) {
+    // Char offset of a DOM boundary point over the chatTextNodes() space,
+    // measured indirectly through a range spanning [point … end of chat].
+    // Range.intersectsNode resolves element containers for us — no manual
+    // element-offset math. (The space includes whitespace-only nodes so
+    // positions between block elements are exact.)
+    function chatPointToOffset(container, offset) {
       const nodes = chatTextNodes();
-      let pos = 0;
+      let total = 0;
+      for (const t of nodes) total += t.nodeValue.length;
+      const r = document.createRange();
+      try {
+        r.setEnd(chatEl, chatEl.childNodes.length);
+        r.setStart(container, offset);
+      } catch (_) { return null; }
+      let after = 0;
       for (const t of nodes) {
-        if (t === node) return pos + offset;
-        pos += t.nodeValue.length;
+        if (!r.intersectsNode(t)) continue;
+        after += (t === r.startContainer) ? (t.nodeValue.length - r.startOffset) : t.nodeValue.length;
       }
-      return pos;
+      r.detach && r.detach();
+      return total - after;
     }
 
-    // Remove existing marks, then wrap every stored [start,end) range in a
-    // yellow <mark>.
-    function applyChatHighlights() {
-      chatEl.querySelectorAll('mark.chat-hl').forEach((m) => {
-        const parent = m.parentNode;
-        while (m.firstChild) parent.insertBefore(m.firstChild, m);
-        m.remove();
-        parent.normalize();
-      });
+    // Wrap [start,end) of the live selection in yellow marks by splitting
+    // text nodes in place. Returns true on success.
+    function wrapRangeWithMarks(range) {
       const nodes = chatTextNodes();
-      const starts = []; const ends = []; let pos = 0;
-      for (const t of nodes) { starts.push(pos); ends.push(pos + t.nodeValue.length); pos += t.nodeValue.length; }
-      for (const hl of chatHighlights) {
-        for (let i = 0; i < nodes.length; i++) {
-          const s = Math.max(hl.start, starts[i]);
-          const e = Math.min(hl.end, ends[i]);
-          if (s >= e) continue;
-          const t = nodes[i];
-          // Split off the tail after the highlight, then the head before it.
-          if (e < t.nodeValue.length) t.splitText(e - starts[i]);
-          const mid = (s > starts[i]) ? t.splitText(s - starts[i]) : t;
-          const mark = document.createElement('mark');
-          mark.className = 'chat-hl';
-          mid.parentNode.insertBefore(mark, mid);
-          mark.appendChild(mid);
-        }
+      const spans = [];
+      let pos = 0;
+      for (const t of nodes) { spans.push([pos, pos + t.nodeValue.length, t]); pos += t.nodeValue.length; }
+      const s = chatPointToOffset(range.startContainer, range.startOffset);
+      const e = chatPointToOffset(range.endContainer, range.endOffset);
+      if (s === null || e === null || e <= s) return false;
+      for (const [st, en, t] of spans) {
+        const a = Math.max(s, st);
+        const b = Math.min(e, en);
+        if (a >= b) continue;
+        if (b < en) t.splitText(b - st);
+        const mid = (a > st) ? t.splitText(a - st) : t;
+        const mark = document.createElement('mark');
+        mark.className = 'chat-hl';
+        mid.parentNode.insertBefore(mark, mid);
+        mark.appendChild(mid);
       }
+      return true;
     }
 
     const hlBtn = document.getElementById('hlBtn');
@@ -1505,12 +1510,7 @@ let streamingActive = false; // a model response is being streamed
       e.stopPropagation();
       const inChat = chatSelectionInChat();
       if (!inChat) { hlBtn.style.display = 'none'; return; }
-      const start = chatPointToOffset(inChat.range.startContainer, inChat.range.startOffset);
-      const end = chatPointToOffset(inChat.range.endContainer, inChat.range.endOffset);
-      if (end > start) {
-        chatHighlights.push({ start, end });
-        applyChatHighlights();
-      }
+      wrapRangeWithMarks(inChat.range);
       inChat.sel.removeAllRanges();
       hlBtn.style.display = 'none';
     });
@@ -1533,7 +1533,6 @@ let streamingActive = false; // a model response is being streamed
       currentConvModelIndex = (conv.modelIndex !== undefined && conv.modelIndex !== null) ? conv.modelIndex : null;
       messages = conv.messages || [];
       selectedFiles = conv.selectedFiles || [];
-      chatHighlights = [];
       renderChat();
       renderFiles();
       scheduleCtxUpdate();
@@ -1625,7 +1624,6 @@ let streamingActive = false; // a model response is being streamed
       currentConvName = null;
       currentConvModelIndex = null;
       messages = [];
-      chatHighlights = [];
       resetConvFilters();
       renderChat();
       renderFiles();
