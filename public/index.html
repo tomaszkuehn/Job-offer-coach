@@ -1496,7 +1496,7 @@ let streamingActive = false; // a model response is being streamed
         if (!rect || (!rect.width && !rect.height)) { hlBtn.style.display = 'none'; return; }
         hlBtn.style.display = 'block';
         hlBtn.style.left = Math.min(window.innerWidth - 90, rect.left + rect.width / 2 - 36) + 'px';
-        hlBtn.style.top = Math.max(4, rect.top - 32) + 'px';
+        hlBtn.style.top = (rect.bottom + 6) + 'px';
       }, 0);
     });
 
