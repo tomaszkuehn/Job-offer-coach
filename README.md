@@ -164,6 +164,11 @@ on PATH).
 .
 ├── server.js                      # Express backend: config, CAS files, conversations, streaming proxy, ODT export
 ├── package.json
+├── tests/
+│   ├── run.js                     # Test runner: unit + API suites (npm test)
+│   ├── unit.test.js               # Pure-function tests (extractMetryka, offer parsing, tags, similarity)
+│   ├── api.test.js                # API integration tests — child server on a sandbox GEM_DATA_DIR
+│   └── ui.test.js                 # UI tests — headed Edge window driven by Playwright (npm run test:ui)
 ├── tools/
 │   ├── extract-package.js         # CLI version of the package export (pandoc)
 │   ├── reference-segoui.odt       # Pandoc reference doc: Segoe UI fonts, sizes, spacing, HR style
@@ -211,6 +216,17 @@ on PATH).
 Chat requests (`preview`, `chat`, `chat/stream`, `context-size`) accept
 `{ messages, modelIndex, selectedFiles, conversationId }` — the RAG file
 selection travels with each request, so the server stays stateless.
+
+## Testing
+
+The test suite never touches the real application data — API and UI tests spawn the server with `GEM_DATA_DIR` pointed at a throwaway sandbox under the OS temp dir.
+
+| Command | What it does |
+| --- | --- |
+| `npm test` | Unit tests (pure functions: `extractMetryka`, offer parsing, tag normalization, duplicate similarity) + API integration tests (config/conversations/tags/rename sync, bulk parse/refresh, context size, delete cleanup) via `node --test` |
+| `npm run test:ui` | UI tests in a **dedicated headed Edge window** driven by Playwright (`playwright-core`, `channel: msedge`, no browser download needed): title render, sandbox-only conversation list isolation, metrics overlay, text highlight flow, highlight reset on conversation switch |
+
+Regression coverage includes the bare `METRYKA` heading case (values on a separate line) that previously swallowed bulk metrics.
 
 ## Notes
 

@@ -6,12 +6,17 @@
   "type": "commonjs",
   "license": "AN-NC-ND",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node tests/run.js",
+    "test:ui": "node --test tests/ui.test.js"
   },
   "dependencies": {
     "express": "^4.19.2",
     "jszip": "^3.10.1",
     "multer": "^2.3.0",
     "pdf-parse": "^1.1.1"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0"
   }
 }

@@ -10,7 +10,7 @@ const JSZip = require('jszip');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = process.env.GEM_DATA_DIR || path.join(__dirname, 'data');
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const CONVERSATIONS_DIR = path.join(DATA_DIR, 'conversations');
@@ -1861,8 +1861,28 @@ app.post('/api/context-size', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  backfillSatisfactionTags();
-  backfillMetricsConvNames();
-  console.log(`App running at http://localhost:${PORT}`);
-});
+// Export internals for the test suite (tests/sandbox uses a separate
+// GEM_DATA_DIR, so requiring this module never touches the real data).
+if (require.main !== module) {
+  module.exports = {
+    app,
+    PORT,
+    DATA_DIR,
+    extractMetryka,
+    parseOfferFile,
+    normalizeTagsInput,
+    deriveOfferMeta,
+    bulkOfferTitle,
+    findDuplicateOffers,
+    offerSimilarity,
+    offerTokens,
+    extractText,
+    cleanFileName
+  };
+} else {
+  app.listen(PORT, () => {
+    backfillSatisfactionTags();
+    backfillMetricsConvNames();
+    console.log(`App running at http://localhost:${PORT}`);
+  });
+}
