@@ -117,11 +117,12 @@ app.get('/api/config', (req, res) => {
 
 app.post('/api/config', (req, res) => {
   const cfg = loadConfig();
-  const { models, activeModel, systemPrompt, selectedFiles } = req.body;
+  const { models, activeModel, systemPrompt, selectedFiles, ownerName } = req.body;
   if (models !== undefined) cfg.models = models;
   if (activeModel !== undefined) cfg.activeModel = activeModel;
   if (systemPrompt !== undefined) cfg.systemPrompt = systemPrompt;
   if (selectedFiles !== undefined) cfg.selectedFiles = selectedFiles;
+  if (ownerName !== undefined) cfg.ownerName = String(ownerName).trim();
   saveConfig(cfg);
   res.json({ ok: true });
 });
@@ -796,7 +797,15 @@ app.post('/api/export-package', async (req, res) => {
 
   const RE_CV_NUM = /^4a[\s.:-]/i;
   const RE_CV_WORD = /^CV\b/i;
-  const RE_CV_H1 = /^(?:TOMASZ\s+KUEHN|KUEHN)\b/i;
+  // The CV H1 is the owner's name line ("# JAN KOWALSKI"). The name MUST be
+  // configured (config.ownerName, the sidebar "Owner name" field) — without
+  // it the export refuses to run instead of guessing a hardcoded name.
+  const ownerName = String((loadConfig().ownerName) || '').trim();
+  if (!ownerName) {
+    return res.status(422).json({ error: 'Owner name not configured — set "Owner name (for CV detection)" in the sidebar configuration and save it' });
+  }
+  const ownerLast = ownerName.split(/\s+/).pop();
+  const RE_CV_H1 = new RegExp('^(?:' + ownerName.split(/\s+/).join('\\s+') + '|' + ownerLast + ')\\b', 'i');
   // "## 4. CV (...)" — numbered package section carrying the CV
   const RE_CV_SECTION = /^\d+\s*[.)][^\n]*\bCV\b/i;
   const RE_CL = /^(?:4b[\s.:-]|4c[\s.:-]|Cover\s*Letter|Anschreiben|Bewerbungsschreiben)/i;
@@ -823,7 +832,7 @@ app.post('/api/export-package', async (req, res) => {
   // An enclosing code fence around the document body (```markdown ... ```)
   // is stripped so pandoc does not render literal fence lines.
   // `refine` optionally moves the start forward to a later heading (e.g. the
-  // "# TOMASZ KUEHN" name line) — used when the CV section heading carries an
+  // owner's H1 name line) — used when the CV section heading carries an
   // editorial preamble that must not end up in the exported document.
   function extractDoc(md, start, stops, refine) {
     const heads = listHeadings(md);
@@ -869,13 +878,14 @@ app.post('/api/export-package', async (req, res) => {
   }
 
   // Models also mark document boundaries with BOLD lines instead of headings
-  // ("**TOMASZ KUEHN**", "**COVER LETTER (English)**"). Promote exactly those
+  // ("**JAN KOWALSKI**", "**COVER LETTER (English)**"). Promote exactly those
   // lines to headings so the extractors see them; the replacement keeps the
   // original bold text in the body (only the "# "/"## " prefix is inserted).
+  const escOwner = ownerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   function normalizeDocMarkers(md) {
     return md
       .replace(/^[ \t]*\*\*(Cover\s*Letter\b[^*\n]*)\*\*[ \t]*$/gim, '## **$1**')
-      .replace(/^[ \t]*\*\*(TOMASZ\s+KUEHN)\s*\*\*[ \t]*$/gim, '# **$1**');
+      .replace(new RegExp('^[ \\t]*\\*\\*(' + escOwner + ')\\s*\\*\\*[ \\t]*$', 'gim'), '# **$1**');
   }
 
   const prepMd = (m) => normalizeDocMarkers(unwrapCodeFence(m.content || ''));
@@ -897,10 +907,11 @@ app.post('/api/export-package', async (req, res) => {
   }
 
   // Title from the newest message that has one
+  const escOwnerLast = ownerLast.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const titleMsg = [cvMsg, clEnMsg, clDeMsg].filter(Boolean)
-    .find((m) => /^#\s+(?:Pakiet|PAKIET|AKTUALIZACJA)/im.test(m.content) || /^#\s+.*Kuehn/im.test(m.content));
+    .find((m) => /^#\s+(?:Pakiet|PAKIET|AKTUALIZACJA)/im.test(m.content) || new RegExp('^#\\s+.*' + escOwnerLast, 'im').test(m.content));
   const title = ((titleMsg || cvMsg || { content: '' }).content.match(/^#\s+(?:Pakiet|PAKIET|AKTUALIZACJA|Zaktualizowany|Zaktualizowana)[^\n]*/im)
-    || (titleMsg || cvMsg || { content: '' }).content.match(/^#\s+.*Kuehn[^\n]*/im)
+    || (titleMsg || cvMsg || { content: '' }).content.match(new RegExp('^#\\s+.*' + escOwnerLast + '[^\\n]*', 'im'))
     || ['Application package'])[0].replace(/^#\s+/i, '');
 
   const pandoc = await new Promise((resolve) => {
@@ -926,9 +937,10 @@ app.post('/api/export-package', async (req, res) => {
     }
     if (signOff === -1) return body;
     let cut = lines.length;
+    const sigRe = new RegExp(ownerLast.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '|@|\\+49|linkedin|github|hamburg|germany|deutschland|poland', 'i');
     for (let i = signOff + 1; i < Math.min(signOff + 6, lines.length); i++) {
       const l = lines[i].trim();
-      if (l === '' || /kuehn|@|\+49|linkedin|github|hamburg|germany|deutschland|poland/i.test(l)) cut = i + 1;
+      if (l === '' || sigRe.test(l)) cut = i + 1;
       else break;
     }
     return lines.slice(0, cut).join('\n').trimEnd();
@@ -943,8 +955,8 @@ app.post('/api/export-package', async (req, res) => {
   fs.mkdirSync(outDir, { recursive: true });
 
   // Standalone CV (regenerated outside a package): extractDoc starts at the
-  // "# TOMASZ KUEHN" H1, so the chatty intro before it is already dropped and
-  // no separate slicing is needed.
+  // owner's "# JAN KOWALSKI" H1, so the chatty intro before it is already
+  // dropped and no separate slicing is needed.
 
   // Remove AI-typical em dashes: "word — word" -> "word - word"
   function stripEmDashes(text) {

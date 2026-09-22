@@ -7,6 +7,9 @@ data/
 # User documents
 moje_dok/
 
+# Build output (rebuild via tools\make-installer.ps1)
+dist/
+
 # Portfolio documents
 Portfolio_*
 

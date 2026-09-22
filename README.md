@@ -1,4 +1,4 @@
-# AI Chat — Job Offers
+# Job Offer Coach
 
 A web application for preparing job offers with the help of an AI model in the cloud (Ollama Cloud). Runs in the browser; the backend is Node.js + Express.
 
@@ -23,13 +23,13 @@ Attribution-Required **Non-Commercial No-Derivatives** (`AN-NC-ND`, custom, CC B
 - **Bulk analysis** — pick one or more offer files (the **CSV export** from the LinkedIn extension options page — `linkedin-jobs.csv` with `jobId,title,company,location,workplaceType,url,status,savedAt,descriptionText` headers, or the legacy `job.txt`: full LinkedIn HTML snapshots, one or many offers per file, or the plain-text "copy" format `title / company / location / url / --- / description`), tick the offers to process, and GEM automatically creates a conversation per offer with the **RAG file set of the latest conversation**, sends the offer, waits for the full reply, renames the conversation to `Company — Position`, and extracts the **METRYKA** block (interview / employment / role fit / satisfaction / salary / recommend %) into `data/metrics.json`. A failed offer deletes its conversation and is retried once; a second failure skips it. Progress is streamed per offer (NDJSON) and shown as status chips in the dialog. Offers already analyzed in stored conversations (≥ 70 % similarity, same algorithm as the preview warning) are **highlighted in yellow and unchecked by default**, with a "Already analyzed in: …" badge. Each row shows the CSV `Status` value as a chip (apply / applied / to-consider / german / ignored); clicking the row body opens a **full offer preview** (Esc / ✕ / backdrop closes).
 - **Metrics view** — a "Metrics" button lists all saved metrics sorted by the *Recommend* score (best first); each row shows company, position, application status (to apply / applied / not applying), all six METRYKA percentages and the date; clicking a row opens the conversation the metric came from. The status cell is a shortcut tag editor: clicking it cycles `to apply` → `not applying` → clear (and saves via the tags endpoint, so the conversation tags and the `metrics.json` entry stay in sync). Manual chats also get metrics automatically: when a saved conversation's **fresh** reply contains a METRYKA block, it is extracted on save — tags (I/S %) are updated and a `metrics.json` entry is upserted (re-analysis replaces the old values; manual tag edits during ordinary browsing are never overwritten). Company/position for manual chats are inferred from the first user message (`title`, `Employers: …` or `title / company / location / url` layout).
 - **Backup & restore** — a "Backup & restore" button downloads a ZIP of the whole `data/` directory (config incl. API keys, conversations, RAG files, metrics); restoring from a ZIP (with confirmation) wipes and replaces the current data.
-- **Live context-size indicator** — a badge next to the model switcher shows the estimated context size in kB (green / yellow / red thresholds) so cost and limit pressure are visible before sending.
+- **Live context-size indicator** — a badge next to the model switcher shows the estimated context size in tokens (green / yellow / red thresholds) so cost and limit pressure are visible before sending.
 
 ## Content-addressed RAG files
 
 Every uploaded file is stored under a name derived from its content:
 `<first 8 chars of SHA-256>_<clean original name>`, e.g.
-`ba15a635_CV_Tomasz_Kuehn_extracted.txt`.
+`ba15a635_CV_Jan_Kowalski_extracted.txt`.
 
 Consequences:
 
@@ -61,7 +61,7 @@ Build a distributable package with:
 powershell -ExecutionPolicy Bypass -File tools\make-installer.ps1
 ```
 
-This produces `dist\GEM-Setup-<version>.zip` (app files + installer, no `node_modules`/`data`). To install, unzip it and double-click `install.cmd`, or run:
+This produces `dist\GEM-Setup-<version>.zip` (app files + installer, no `node_modules`/`data`). The `dist/` directory is not committed — build the zip locally and distribute it separately. To install, unzip it and double-click `install.cmd`, or run:
 
 ```bash
 powershell -ExecutionPolicy Bypass -File tools\install.ps1 [-InstallDir <path>] [-NoStartup] [-NoStart]
@@ -84,6 +84,7 @@ In the sidebar:
    - **API key** — your Ollama Cloud key (from https://ollama.com/settings/keys)
    - **Model** — e.g. `deepseek-v4-flash:0731` (or use **Fetch models** to pick from the live catalogue)
 2. **Expected response (prompt)** — instructions for the model on how to phrase the response.
+   - **Owner name** — **required** for the ODT export: your full name (e.g. `Jan Kowalski`); the export uses it to recognize the CV heading (`# JAN KOWALSKI`) and the signature block in cover letters. Without it the export refuses to run (HTTP 422 with a hint); nothing is guessed.
 3. **Files (RAG)** — upload files to attach them to the current conversation.
 
 Click **Save configuration** (the button pulses red when there are unsaved changes).
@@ -134,7 +135,7 @@ on PATH).
 - **Section detection is format-tolerant**: numbered headings (`### 4a.`, `4b.`, `4c.`),
   natural-language headings on H2–H4 (`## CV (English…)`, `### Cover Letter (EN)`,
   `## Anschreiben (Deutsch…)`), and standalone CV regeneration messages
-  (`# Tomasz Kuehn …`, also inside a ```markdown fence) are all recognized.
+  (`# Jan Kowalski …`, also inside a ```markdown fence) are all recognized.
 - Each part is taken from the **latest** assistant message containing it —
   a full package, a partial package update, or a standalone CV regeneration
   all count, so the newest version always wins.
@@ -231,5 +232,5 @@ Regression coverage includes the bare `METRYKA` heading case (values on a separa
 ## Notes
 
 - RAG files are attached as plain text to the prompt (no embeddings/vectors) — the right trade-off when the corpus is a handful of personal documents.
-- The API key is stored locally in `data/config.json` — do not share this file. Keys are never exposed to the frontend; all provider calls are proxied through the backend.
+- The API key is stored locally in `data/config.json` — do not share this file. Keys are never rendered in plain text in the UI (password fields) and are not needed by any third party; the frontend fetches the config (incl. the key for the config panel) and the model calls are proxied through the backend. All requests stay on the local machine (`server.js` listens on `127.0.0.1`).
 - The app runs locally; it is not intended for public deployment without security measures.

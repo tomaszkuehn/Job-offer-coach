@@ -3,7 +3,10 @@ $ErrorActionPreference = 'SilentlyContinue'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# Hardcoded dir is a dev-machine convenience; the installed copy falls back
+# to its own directory (installer ships the tray next to server.js).
 $gemDir = 'D:\kody\GEM'
+if (-not (Test-Path (Join-Path $gemDir 'server.js'))) { $gemDir = $PSScriptRoot }
 $gemUrl = 'http://localhost:3000'
 $script:running = $true
 $script:trayLog = Join-Path $env:TEMP 'GEM-tray.log'

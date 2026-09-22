@@ -482,6 +482,7 @@
     <div class="section">
       <h2>Expected response (prompt)</h2>
       <textarea id="systemPrompt" placeholder="E.g. You are an HR expert. Prepare a professional job offer based on the description. Use a clear structure: position, responsibilities, requirements, we offer."></textarea>
+      <input type="text" id="ownerName" placeholder="Your name for CV detection, e.g. Jan Kowalski (required for ODT export)" style="width:100%; margin-top:8px" autocomplete="off" />
     </div>
 
     <div class="section">
@@ -726,7 +727,8 @@ let streamingActive = false; // a model response is being streamed
       return JSON.stringify({
         models,
         activeModel,
-        systemPrompt: document.getElementById('systemPrompt').value
+        systemPrompt: document.getElementById('systemPrompt').value,
+        ownerName: document.getElementById('ownerName').value
       });
     }
     function markDirty() {
@@ -1648,6 +1650,7 @@ let streamingActive = false; // a model response is being streamed
       models = cfg.models && cfg.models.length ? cfg.models : [];
       activeModel = (cfg.activeModel !== undefined && cfg.activeModel < models.length) ? cfg.activeModel : 0;
       document.getElementById('systemPrompt').value = cfg.systemPrompt || '';
+      document.getElementById('ownerName').value = cfg.ownerName || '';
       // selectedFiles is per-conversation state — loadConfig no longer resets it
       allFiles = cfg.files || [];
       // Uniform RAG: on startup (fresh page load, no conversation restored
@@ -1666,7 +1669,8 @@ let streamingActive = false; // a model response is being streamed
       const body = {
         models,
         activeModel,
-        systemPrompt: document.getElementById('systemPrompt').value
+        systemPrompt: document.getElementById('systemPrompt').value,
+        ownerName: document.getElementById('ownerName').value.trim()
       };
       try {
         const res = await fetch('/api/config', {
@@ -1723,6 +1727,12 @@ let streamingActive = false; // a model response is being streamed
         status.textContent = 'Save the conversation first — there is nothing to export yet.';
         status.style.color = '#b25e09';
         setTimeout(() => { status.textContent = ''; status.style.color = ''; }, 4000);
+        return;
+      }
+      if (!document.getElementById('ownerName').value.trim()) {
+        status.textContent = 'Set "Your name for CV detection" in the configuration above and save it first.';
+        status.style.color = '#b25e09';
+        setTimeout(() => { status.textContent = ''; status.style.color = ''; }, 6000);
         return;
       }
       btn.disabled = true;
