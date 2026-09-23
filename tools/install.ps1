@@ -214,9 +214,9 @@ $trayOut | Set-Content -LiteralPath (Join-Path $InstallDir 'tray-app.ps1') -Enco
 $ErrorActionPreference = 'SilentlyContinue'
 Get-NetTCPConnection -LocalPort 3000 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
 Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'tray-app\.ps1' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
-$startup = [System.IO.Path]::Combine([Environment]::GetFolderPath('Startup'), 'GEM Tray.lnk')
+$startup = [System.IO.Path]::Combine([Environment]::GetFolderPath([Environment+SpecialFolder]::Startup), 'GEM Tray.lnk')
 if (Test-Path $startup) { Remove-Item $startup -Force }
-$desktop = [System.IO.Path]::Combine([Environment]::GetFolderPath('Desktop'), 'Job Offer Coach.url')
+$desktop = [System.IO.Path]::Combine([Environment]::GetFolderPath([Environment+SpecialFolder]::Desktop), 'Job Offer Coach.url')
 if (Test-Path $desktop) { Remove-Item $desktop -Force }
 Remove-Item -LiteralPath $PSScriptRoot -Recurse -Force
 '@ | Set-Content -LiteralPath (Join-Path $InstallDir 'uninstall.ps1') -Encoding UTF8
@@ -229,7 +229,8 @@ Write-Host 'Desktop shortcut created (Job Offer Coach)'
 # --- logon autostart ---
 if (-not $NoStartup) {
   $wsh = New-Object -ComObject WScript.Shell
-  $lnk = $wsh.CreateShortcut((Join-Path [Environment]::GetFolderPath('Startup') 'GEM Tray.lnk'))
+  $startupDir = [Environment]::GetFolderPath([Environment+SpecialFolder]::Startup)
+  $lnk = $wsh.CreateShortcut((Join-Path $startupDir 'GEM Tray.lnk'))
   $lnk.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
   $lnk.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$InstallDir\tray-app.ps1`""
   $lnk.WorkingDirectory = $InstallDir
