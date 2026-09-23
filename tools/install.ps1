@@ -230,4 +230,4 @@ if (-not $NoStart) {
   }
 }
 
-Write-Host "Done. Uninstall: powershell -File `"$InstallDir\uninstall.ps1`""
+Write-Host "Done. Uninstall: powershell -NoProfile -ExecutionPolicy Bypass -File `"$InstallDir\uninstall.ps1`""
