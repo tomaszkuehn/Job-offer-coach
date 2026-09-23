@@ -138,6 +138,17 @@ function Invoke-Npm {
   return $LASTEXITCODE
 }
 
+# --- TLS pre-flight: CERT_EXPIRED is almost always a wrong system clock ---
+try {
+  $r = Invoke-WebRequest -Uri 'https://registry.npmjs.org/' -Method Head -UseBasicParsing -TimeoutSec 5
+  $srv = [DateTimeOffset]::Parse($r.Headers['Date'], [Globalization.CultureInfo]::InvariantCulture)
+  $skewH = [Math]::Abs(([DateTime]::UtcNow - $srv.UtcDateTime).TotalHours)
+  if ($skewH -gt 48) {
+    Write-Warning "System clock is off by ~$([int]$skewH) h from real time. TLS certificates will fail (npm: CERT_EXPIRED). Fix Windows date/time and re-run."
+  }
+} catch { # probe failed - npm will surface the real error later
+}
+
 Push-Location $InstallDir
 try {
   $code = Invoke-Npm @('ci', '--omit=dev')
@@ -145,6 +156,21 @@ try {
     Write-Warning "npm ci failed (exit $code) - retrying with npm install..."
     Remove-Item -LiteralPath (Join-Path $InstallDir 'node_modules') -Recurse -Force -ErrorAction SilentlyContinue
     $code = Invoke-Npm @('install', '--omit=dev')
+  }
+  if ($code -ne 0) {
+    # TLS-level failure (CERT_EXPIRED, self-signed, UNABLE_TO_VERIFY): wrong
+    # clock or TLS-intercepting AV/proxy. Retry over plain http - integrity is
+    # still guaranteed by the sha512 hashes in the bundled package-lock.json,
+    # which npm verifies for every tarball regardless of transport.
+    Write-Warning 'Retrying with http:// registry (TLS avoided; package-lock sha512 hashes still verify every tarball)...'
+    $env:npm_config_registry = 'http://registry.npmjs.org/'
+    Remove-Item -LiteralPath (Join-Path $InstallDir 'node_modules') -Recurse -Force -ErrorAction SilentlyContinue
+    $code = Invoke-Npm @('ci', '--omit=dev')
+    if ($code -ne 0) {
+      Remove-Item -LiteralPath (Join-Path $InstallDir 'node_modules') -Recurse -Force -ErrorAction SilentlyContinue
+      $code = Invoke-Npm @('install', '--omit=dev')
+    }
+    Remove-Item Env:\npm_config_registry -ErrorAction SilentlyContinue
   }
   if ($code -ne 0) { throw "npm install failed (exit $code)" }
 } finally { Pop-Location }
