@@ -15,8 +15,12 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-$src = Split-Path -Parent $PSScriptRoot
-if (-not (Test-Path (Join-Path $src 'server.js'))) { throw "server.js not found next to tools\ (got: $src)" }
+# App source: zip layout has install.ps1 next to an app\ folder; repo layout
+# has this script inside tools\ with server.js one level up.
+$src = $PSScriptRoot
+if (Test-Path (Join-Path $src 'app\server.js')) { $src = Join-Path $src 'app' }
+elseif (-not (Test-Path (Join-Path $src 'server.js'))) { $src = Split-Path -Parent $PSScriptRoot }
+if (-not (Test-Path (Join-Path $src 'server.js'))) { throw "server.js not found (got: $src)" }
 
 function Refresh-Path {
   $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
