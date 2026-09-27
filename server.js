@@ -826,6 +826,17 @@ app.post('/api/export-package', async (req, res) => {
   const isLangDe = (h) => (RE_CL_DE.test(h.norm) && !RE_CL_EN.test(h.norm))
     || /^Bewerbungsschreiben|^Anschreiben/i.test(h.norm);
   const isNumberedH2 = (h) => h.level === 2 && RE_NUM_SECTION.test(h.norm);
+  // The owner's name line inside a cover letter (sender block at the top,
+  // signature at the bottom — often a bold `**NAME**` line promoted to H1 by
+  // normalizeDocMarkers) is part of the letter, not a document boundary. It
+  // only counts as a boundary when a real sub-headed document follows it
+  // (i.e. it titles a CV placed after the letter).
+  const isOwnerH1 = (h) => h.level === 1 && RE_CV_H1.test(h.norm);
+  const isBareOwnerH1 = (h, i, all) => {
+    if (!isOwnerH1(h)) return false;
+    const nxt = all[i + 1];
+    return !nxt || isClStart(nxt) || isNumberedH2(nxt);
+  };
 
   // Slice a document out of a message: body from the first heading matching
   // `start` until the first later heading matching one of the `stop` rules.
@@ -840,7 +851,7 @@ app.post('/api/export-package', async (req, res) => {
     if (fromIdx === -1) return null;
     let stopIdx = heads.length;
     for (let i = fromIdx + 1; i < heads.length; i++) {
-      if (stops.some((s) => s(heads[i]))) { stopIdx = i; break; }
+      if (stops.some((s) => s(heads[i], i, heads))) { stopIdx = i; break; }
     }
     let startAt = heads[fromIdx].end;
     if (refine) {
@@ -866,7 +877,7 @@ app.post('/api/export-package', async (req, res) => {
   const extractCl = (md, wantDe) => extractDoc(
     md,
     (h) => isClStart(h) && (wantDe ? isLangDe(h) : !isLangDe(h)),
-    [(h) => !isClStart(h), (h) => isClStart(h) && (wantDe ? !isLangDe(h) : isLangDe(h))]
+    [(h, i, all) => !isClStart(h) && !isBareOwnerH1(h, i, all), (h) => isClStart(h) && (wantDe ? !isLangDe(h) : isLangDe(h))]
   );
 
   // Models sometimes wrap the whole answer in a ```markdown fence — strip it
@@ -965,11 +976,20 @@ app.post('/api/export-package', async (req, res) => {
 
   const mdOf = (m) => (m ? m.content : '');
   const cvFromPkg = cvMsg ? extractCv(prepMd(cvMsg)) : null;
+  const clEnRaw = clEnMsg ? extractCl(prepMd(clEnMsg), false) : null;
+  const clDeRaw = clDeMsg ? extractCl(prepMd(clDeMsg), true) : null;
   const parts = [
     ['CV', cvFromPkg, 'CV'],
-    ['CoverLetter_EN', clEnMsg ? trimAfterSignature(extractCl(prepMd(clEnMsg), false)) : null, 'cover'],
-    ['CoverLetter_DE', clDeMsg ? trimAfterSignature(extractCl(prepMd(clDeMsg), true)) : null, 'Anschreiben'],
+    ['CoverLetter_EN', clEnRaw == null ? null : trimAfterSignature(clEnRaw), 'cover'],
+    ['CoverLetter_DE', clDeRaw == null ? null : trimAfterSignature(clDeRaw), 'Anschreiben'],
   ];
+  // A part whose heading exists but whose body is empty is reported, never
+  // silently skipped (previously an empty section just vanished from output).
+  const emptyPartKinds = [
+    ['CV', cvFromPkg],
+    ['CoverLetter_EN', clEnRaw],
+    ['CoverLetter_DE', clDeRaw],
+  ].filter((p) => p[1] !== null && !String(p[1]).trim()).map((p) => p[0]);
   const kindFile = (kind) => { for (const p of parts) if (p[0] === kind) return p[2] || kind; return kind; };
 
   // Segoe UI reference doc: the 2023/24 Calibri redesign ships a contextual
@@ -1017,7 +1037,7 @@ app.post('/api/export-package', async (req, res) => {
 
   try {
     let manifestDirty = false;
-    const failed = [];
+    const failed = emptyPartKinds.map((k) => `${k}: section heading found but the body is empty`);
     for (const [kind, content] of parts) {
       if (!content) continue;
       const hash = contentHash(stripEmDashes(content));
