@@ -181,6 +181,16 @@ test('conversation search filters the sidebar list', async () => {
   assert.match(list, /No conversations|No saved|match/i, 'empty state message appears for a no-hit search');
   await page.fill('#convSearch', '');
   await pause();
+  // Clear (✕) button: appears only when the field has text, restores the full list.
+  await page.fill('#convSearch', 'ACME - Dev');
+  await pause(900);
+  const clearVisible = await page.$eval('#convSearchClear', (b) => b.style.display !== 'none');
+  assert.ok(clearVisible, 'clear button becomes visible while a query is set');
+  await page.click('#convSearchClear');
+  await pause(900);
+  list = await page.textContent('#convList');
+  assert.match(list, /ACME - Dev/);
+  assert.match(list, /Other - Chat/, 'clear (✕) restores the unfiltered list');
 });
 
 test('RAG files panel toggles open and closed', async () => {

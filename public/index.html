@@ -32,6 +32,11 @@
     #convList { max-height: 320px; overflow-y: auto; border: 1px solid #e4e7eb; border-radius: 6px; padding: 4px; }
     #convList:empty { border: none; padding: 0; }
     #convSearch { margin-top: 8px; }
+    #convSearchClear {
+      background: none; border: none; cursor: pointer; padding: 0;
+      font-size: 13px; color: #52606d; line-height: 1;
+    }
+    #convSearchClear:hover { color: #d64545; }
     .conv-match {
       display: block; font-size: 10px; color: #2563eb; margin: 0;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -457,8 +462,9 @@
         <button class="filter-chip" data-status="not_applying" title="Show only conversations tagged 'not applying'">not applying</button>
       </div>
       <div id="convList"></div>
-      <div style="display:flex; gap:6px; margin-top:8px">
-        <input type="text" id="convSearch" autocomplete="off" placeholder="Search titles or message contents…" style="width:100%; flex:1; margin-top:0" />
+      <div style="position:relative; margin-top:8px">
+        <input type="text" id="convSearch" autocomplete="off" placeholder="Search titles or message contents…" style="width:100%; padding-right:22px; box-sizing:border-box" />
+        <button class="del" id="convSearchClear" title="Clear search" style="position:absolute; right:5px; top:50%; transform:translateY(-50%); width:16px; height:16px; display:none">✕</button>
       </div>
       <button class="btn secondary" id="newConvBtn" style="width:100%; margin-top:8px">+ New conversation</button>
       <div class="upload-row" style="margin-top:8px">
@@ -1404,6 +1410,7 @@ let streamingActive = false; // a model response is being streamed
     }
 
     async function loadConversations(q) {
+      if (q == null) q = convSearchEl.value;
       let list;
       if (q && q.trim()) {
         const res = await fetch('/api/conversations/search?q=' + encodeURIComponent(q.trim()));
@@ -1440,14 +1447,26 @@ let streamingActive = false; // a model response is being streamed
     });
 
     // Conversation search: debounced server search across titles and bodies
+    const convSearchClear = document.getElementById('convSearchClear');
+    function syncConvSearchClear() {
+      convSearchClear.style.display = convSearchEl.value ? '' : 'none';
+    }
+    convSearchClear.addEventListener('click', () => {
+      convSearchEl.value = '';
+      syncConvSearchClear();
+      loadConversations('');
+      convSearchEl.focus();
+    });
     let convSearchTimer = null;
     convSearchEl.addEventListener('input', () => {
+      syncConvSearchClear();
       if (convSearchTimer) clearTimeout(convSearchTimer);
       convSearchTimer = setTimeout(() => loadConversations(convSearchEl.value), 250);
     });
     convSearchEl.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         convSearchEl.value = '';
+        syncConvSearchClear();
         loadConversations('');
         convSearchEl.blur();
       }

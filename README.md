@@ -24,6 +24,7 @@ Attribution-Required **Non-Commercial No-Derivatives** (`AN-NC-ND`, custom, CC B
 - **Metrics view** — a "Metrics" button lists all saved metrics sorted by the *Recommend* score (best first); each row shows company, position, application status (to apply / applied / not applying), all six METRYKA percentages and the date; clicking a row opens the conversation the metric came from. The status cell is a shortcut tag editor: clicking it cycles `to apply` → `not applying` → clear (and saves via the tags endpoint, so the conversation tags and the `metrics.json` entry stay in sync). Manual chats also get metrics automatically: when a saved conversation's **fresh** reply contains a METRYKA block, it is extracted on save — tags (I/S %) are updated and a `metrics.json` entry is upserted (re-analysis replaces the old values; manual tag edits during ordinary browsing are never overwritten). Company/position for manual chats are inferred from the first user message (`title`, `Employers: …` or `title / company / location / url` layout).
 - **Backup & restore** — a "Backup & restore" button downloads a ZIP of the whole `data/` directory (config incl. API keys, conversations, RAG files, metrics); restoring from a ZIP (with confirmation) wipes and replaces the current data.
 - **Live context-size indicator** — a badge next to the model switcher shows the estimated context size in tokens (green / yellow / red thresholds) so cost and limit pressure are visible before sending.
+- **Job search (internet)** — a "Job search (internet)" button opens an overlay that fetches **real offers** from public job APIs and portals, pre-filters them locally against your criteria (keywords, location alternatives like `Hamburg, Poznan, remote`, language, workplace chips remote/onsite/hybrid, selectable sources), then lets **your configured AI model** do the final ranking/matching (the AI never invents offers — ids are cross-checked against the fetched pool). Two-step flow: **Search** fetches and builds the prompt (no model call), the prompt is shown **per batch for review/editing** (Alt+↑/↓, skip batch), then **Approve & run AI**. Results can be **Download**ed as a bulk-import JSON (`gem-job-search-YYYYMMDD-HHMM.json`) or **loaded straight into Bulk analysis**. Sources fetched + parsed server-side (scraped portals read the listing page, then each offer's detail page `schema.org JobPosting` JSON-LD, throttled ~1.2–2 s per request): arbeitnow, remotive, jobicy, remoteok, weworkremotely RSS, themuse, **XING** (DACH), **Stepstone** (DE), **NoFluffJobs** (PL); **pracuj.pl** is wired but currently **blocked by Cloudflare** (needs a real browser) and reports that error instead of silently returning nothing. An offline **sample** source (8 built-in offers) makes the whole flow demo-able and testable with no network.
 
 ## Content-addressed RAG files
 
@@ -103,7 +104,9 @@ Click **Save configuration** (the button pulses red when there are unsaved chang
 - Clicking a name in the list **restores** the conversation together with its RAG files. The browsed conversation stays in place on the list and is highlighted in green.
 - The list is **scrollable** (fixed height) and has a **search box**: matching
   covers conversation **titles** and **message contents** — body matches show
-  a snippet under the name. **Esc** clears the search.
+  a snippet under the name. **Esc** clears the search; a subtle **✕ inside
+  the field** (same style as the model-slot remove buttons) appears while a
+  query is set and click-restores the unfiltered list.
 - **✎** renames, **✕** deletes a conversation. Renaming opens an in-app dialog:
   you edit only the name — the creation date and time shown below the name on
   the list are managed by the app and are never part of the editable name.
@@ -167,7 +170,7 @@ on PATH).
 ├── package.json
 ├── tests/
 │   ├── run.js                     # Test runner: unit + API suites (npm test)
-│   ├── unit.test.js               # Pure-function tests (extractMetryka, offer parsing, tags, similarity)
+│   ├── unit.test.js               # Pure-function tests (extractMetryka, offer parsing, tags, similarity, job sources/JSON-LD)
 │   ├── api.test.js                # API integration tests — child server on a sandbox GEM_DATA_DIR
 │   └── ui.test.js                 # UI tests — headed Edge window driven by Playwright (npm run test:ui)
 ├── tools/
@@ -209,6 +212,9 @@ on PATH).
 | POST | `/api/export-package` | Extract CV + cover letters from the latest package in a conversation and convert them to ODT (`{ conversationId }`); returns `207` with a `failed` list on partial success |
 | POST | `/api/bulk/parse` | Parse an uploaded offer file (multipart `file`; CSV export / HTML snapshots / plain text); returns `{ offers: [{ title, company, location, url, description }] }` |
 | POST | `/api/bulk/run` | Run bulk analysis (`{ offers, modelIndex }`); NDJSON progress events `start` / `offer-start` / `offer-done` / `offer-failed` / `done` |
+| POST | `/api/job-search/preview` | Fetch offers from the internet and build AI prompts — no model call; NDJSON (`source-start` / `source-done` / `source-failed` / `prefilter` / `preview`), `searchId` caches the pool 30 min |
+| POST | `/api/job-search/run` | Run the AI over approved/edited prompts (`{ searchId, batches, modelIndex }`); streams per-batch results and composes bulk-format offers |
+| POST | `/api/job-search` | One-shot job search (fetch + AI matching) for programmatic callers/tests |
 | GET | `/api/metrics` | All saved METRYKA entries, sorted by `recommend` (desc); each entry carries `company` / `jobTitle` / `location` / `url` / `status` (`to_apply` / `applied` / `not_applying`) |
 | DELETE | `/api/metrics/:convId` | Delete the metric entry of a conversation |
 | GET | `/api/backup` | Download a ZIP of the whole `data/` directory (config incl. API keys, conversations, RAG files, metrics) with a `gem-backup.json` manifest |
@@ -224,8 +230,8 @@ The test suite never touches the real application data — API and UI tests spaw
 
 | Command | What it does |
 | --- | --- |
-| `npm test` | Unit tests (pure functions: `extractMetryka`, offer parsing, tag normalization, duplicate similarity) + API integration tests (config/conversations/tags/rename sync, bulk parse/refresh, context size, delete cleanup) via `node --test` |
-| `npm run test:ui` | UI tests in a **dedicated headed Edge window** driven by Playwright (`playwright-core`, `channel: msedge`, no browser download needed): title render, sandbox-only conversation list isolation, metrics overlay, text highlight flow, highlight reset on conversation switch |
+| `npm test` | Unit tests (pure functions: `extractMetryka`, offer parsing, tag normalization, duplicate similarity, job sources/JSON-LD) + API integration tests (config/conversations/tags/rename sync, bulk parse/refresh, context size, delete cleanup, job-search preview/run offline flow) via `node --test` |
+| `npm run test:ui` | UI tests in a **dedicated headed Edge window** driven by Playwright (`playwright-core`, `channel: msedge`, no browser download needed): title render, sandbox-only conversation list isolation, metrics overlay, text highlight flow, highlight reset on conversation switch, conversation search (incl. the in-field ✕ clear), job-search overlay with the offline sample |
 
 Regression coverage includes the bare `METRYKA` heading case (values on a separate line) that previously swallowed bulk metrics.
 
