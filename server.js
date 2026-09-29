@@ -326,7 +326,7 @@ app.delete('/api/files/:name', (req, res) => {
   res.json({ ok: true, removedFromConversations: removedFromConvs });
 });
 
-async function buildPayload(messages, modelIndex, selectedFileList, conversationId) {
+async function buildPayload(messages, modelIndex, selectedFileList, conversationId, systemOverride) {
   const cfg = loadConfig();
   const models = cfg.models && cfg.models.length
     ? cfg.models
@@ -340,6 +340,11 @@ async function buildPayload(messages, modelIndex, selectedFileList, conversation
   const model = m.model || 'gpt-oss:20b-cloud';
 
   let systemContent = cfg.systemPrompt || '';
+  // Job-search runs use a self-contained prompt and must not inherit the
+  // app's RAG system prompt or attached files.
+  if (systemOverride !== undefined && systemOverride !== null) {
+    systemContent = String(systemOverride);
+  }
   // Per-conversation RAG: client sends the file list; fall back to legacy
   // global config. Files are content-addressed (<hash8>_<name>), so a name
   // uniquely identifies its content across all conversations.
@@ -1407,6 +1412,657 @@ function parsePlainOffers(text) {
   return offers;
 }
 
+// ---- Job search (internet) ----
+// Hybrid design: the server fetches real offers from public, keyless job
+// APIs/RSS, pre-filters them locally, then the configured AI model selects
+// and annotates the matches (language, reason). The AI never invents offers:
+// every returned id is cross-checked against the fetched pool.
+const JOB_FETCH_TIMEOUT_MS = 15000;
+const JOB_HOST_DELAY_MS = 1200;      // pacing between requests to one host
+const JOB_SOURCE_GAP_MS = 800;       // pacing between sources
+const JOB_MAX_POOL = 150;            // candidates sent to the AI (cap)
+const JOB_MAX_RESULTS = 40;          // offers kept in the final file
+const JOB_AI_BATCH = 25;             // candidates per AI call
+const JOB_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+
+// Offline sample source: deterministic, used by the UI demo and tests.
+const JOB_SAMPLE_OFFERS = [
+  { title: 'Team Lead Software (AI)', company: 'Sample Hamburg GmbH', location: 'Hamburg, Germany', workplace: 'onsite', url: 'https://example.com/sample/1', applyUrl: 'https://example.com/sample/1', salary: '€90-110k', savedAt: '2026-09-01', description: 'We are looking for a team lead software engineer to build AI-driven products with a team of eight. English working language, no German required. You will own architecture, coach engineers and ship LLM-based features.' },
+  { title: 'Senior Python Engineer, Remote EU', company: 'Sample Remote Ltd', location: 'Europe (Remote)', workplace: 'remote', url: 'https://example.com/sample/2', applyUrl: 'https://example.com/sample/2', salary: '', savedAt: '2026-09-02', description: 'Fully remote Python role for the EU. You will design FastAPI services integrated with local LLMs. German is a plus, not required. Apply through our careers portal with a CV in English.' },
+  { title: 'Embedded Software Lead', company: 'Sample Poznan Sp. z o.o.', location: 'Poznan, Poland', workplace: 'hybrid', url: 'https://example.com/sample/3', applyUrl: 'https://example.com/sample/3', salary: '', savedAt: '2026-09-03', description: 'Lead the embedded team in Poznan. C/C++ on Jetson, YOLO pipelines and AI-assisted development. Communication in English; German not required. Send your application via the link.' },
+  { title: 'Architekt Systemow Wbudowanych', company: 'Sample Warszawa S.A.', location: 'Warsaw, Poland', workplace: 'onsite', url: 'https://example.com/sample/4', applyUrl: 'https://example.com/sample/4', salary: '', savedAt: '2026-09-04', description: 'Poszukujemy architekta systemow wbudowanych do zespolu 15 osob. Praca z AI, lokalnymi modelami LLM i gateway FastAPI. Jezyk angielski wymagany, niemiecki nie jest wymagany. Aplikuj przez formularz.' },
+  { title: 'Machine Learning Engineer', company: 'Sample AI BV', location: 'Amsterdam, Netherlands', workplace: 'hybrid', url: 'https://example.com/sample/5', applyUrl: 'https://example.com/sample/5', salary: '', savedAt: '2026-09-05', description: 'ML engineering role focused on computer vision and edge deployment. Hybrid from Amsterdam, four days remote. English-only workplace, German not needed. Apply with a short motivation letter.' },
+  { title: 'Engineering Manager, Platform', company: 'Sample Cloud Inc', location: 'Worldwide (Remote)', workplace: 'remote', url: 'https://example.com/sample/6', applyUrl: 'https://example.com/sample/6', salary: '', savedAt: '2026-09-06', description: 'Remote engineering manager for a platform team. You will mentor 10 engineers, run hiring and set the roadmap. Fully English environment. Apply online, no German required.' },
+  { title: 'Senior Backend Developer', company: 'Sample Berlin UG', location: 'Berlin, Germany', workplace: 'hybrid', url: 'https://example.com/sample/7', applyUrl: 'https://example.com/sample/7', salary: '', savedAt: '2026-09-07', description: 'Backend role in Berlin with German required at B2 level for customer communication. Node.js and Postgres. Hybrid, two office days. Please apply in German with a German CV.' },
+  { title: 'AI Solutions Consultant', company: 'Sample Muenchen GmbH', location: 'Munich, Germany', workplace: 'onsite', url: 'https://example.com/sample/8', applyUrl: 'https://example.com/sample/8', salary: '', savedAt: '2026-09-08', description: 'Consulting role delivering AI solutions to enterprise clients. Fluent German required. English is the internal language. Onsite in Munich, travel up to 30 percent. Apply by email.' }
+];
+function normalizeJobSample() { return JOB_SAMPLE_OFFERS.map((o) => Object.assign({ source: 'sample' }, o)); }
+
+const sampleFetcher = async () => ({ ok: true, status: 200, json: async () => ({}) });
+
+// ---- JSON-LD JobPosting extraction (XING / Stepstone / NoFluffJobs) ----
+// Those portals have no open API, but every offer detail page embeds a
+// schema.org JobPosting in <script type="application/ld+json">. We scrape the
+// listing page for links, then read each detail's JSON-LD (throttled).
+function parseJsonLdJobPostings(html) {
+  const out = [];
+  const re = /<script[^>]*application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi;
+  let m;
+  const visit = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(visit); return; }
+    if (node['@type'] === 'JobPosting') out.push(node);
+    if (Array.isArray(node['@graph'])) node['@graph'].forEach(visit);
+  };
+  while ((m = re.exec(html))) {
+    let data;
+    try { data = JSON.parse(m[1]); } catch (_) { continue; }
+    visit(data);
+  }
+  return out;
+}
+
+function jsonLdSalary(jp) {
+  const b = jp.baseSalary;
+  if (!b) return '';
+  const v = b.value || {};
+  const cur = b.currency || v.currency || '';
+  const min = v.minValue, max = v.maxValue, val = v.value;
+  const unit = v.unitText ? ' / ' + String(v.unitText).toLowerCase() : '';
+  if (min != null && max != null) return min + '-' + max + ' ' + cur + unit;
+  if (val != null) return val + ' ' + cur + unit;
+  return '';
+}
+
+function jsonLdLocation(jp) {
+  const locs = Array.isArray(jp.jobLocation) ? jp.jobLocation : (jp.jobLocation ? [jp.jobLocation] : []);
+  const parts = [];
+  for (const l of locs) {
+    const a = (l && l.address) || {};
+    const s = [a.addressLocality, a.addressRegion, a.addressCountry].filter(Boolean).join(', ');
+    if (s) parts.push(s);
+  }
+  return parts.join(' | ');
+}
+
+function normalizeJsonLdOffer(jp, source, fallbackUrl) {
+  if (!jp || !jp.title) return null;
+  const description = offerHtmlToText(jp.description);
+  if (description.length < 100) return null;
+  const locType = String(jp.jobLocationType || '');
+  const loc = jsonLdLocation(jp);
+  const remote = /telecommute/i.test(locType) || /remote|homeoffice|home office|zdaln/i.test(loc) || /remote/i.test(String(jp.title || ''));
+  return {
+    source,
+    title: offerClean(jp.title, 160),
+    company: offerClean((jp.hiringOrganization && jp.hiringOrganization.name) || '', 120),
+    location: offerClean(loc || (remote ? 'Remote' : ''), 120),
+    workplace: remote ? 'remote' : 'onsite',
+    url: offerClean(jp.url || fallbackUrl, 500),
+    applyUrl: offerClean(jp.url || fallbackUrl, 500),
+    salary: offerClean(jsonLdSalary(jp), 120),
+    savedAt: offerClean(jp.datePosted, 20),
+    description
+  };
+}
+
+// Generic "listing -> detail JSON-LD" harness, rate-limited per the user's
+// request (sequential detail fetches with a delay to avoid portal blocks).
+const JOB_HTML_MAX_DETAILS = 12;
+async function jobFetchHtmlSource(src, criteria, ctx) {
+  const kw = (criteria.keywords || '').split(/\s+/).filter(Boolean).slice(0, 3).join(' ');
+  const listingUrl = src.listing(criteria, kw);
+  const html = await ctx.getText(listingUrl);
+  const links = [];
+  const seen = new Set();
+  const re = new RegExp(src.linkRe, 'gi');
+  let m;
+  while ((m = re.exec(html))) {
+    let u = m[1] || m[0];
+    if (!/^https?:/i.test(u)) u = src.base + u;
+    u = u.split('#')[0].split('?')[0];
+    if (seen.has(u)) continue;
+    seen.add(u);
+    links.push(u);
+    if (links.length >= (src.maxDetails || JOB_HTML_MAX_DETAILS)) break;
+  }
+  const offers = [];
+  for (let i = 0; i < links.length; i++) {
+    if (i > 0 && ctx.delay > 0) await new Promise((r) => setTimeout(r, ctx.delay));
+    try {
+      const detail = await ctx.getText(links[i]);
+      for (const jp of parseJsonLdJobPostings(detail)) {
+        const o = normalizeJsonLdOffer(jp, src.id, links[i]);
+        if (o) offers.push(o);
+      }
+    } catch (_) { /* one bad detail must not kill the source */ }
+  }
+  return offers;
+}
+
+const JOB_SOURCES = [
+  {
+    id: 'arbeitnow', parseAs: 'json', normalize: normalizeArbeitnow,
+    urls: ['https://www.arbeitnow.com/api/job-board-api'],
+    searchUrl: (kw) => 'https://www.arbeitnow.com/api/job-board-api?search=' + kw
+  },
+  {
+    id: 'remotive', parseAs: 'json', normalize: normalizeRemotive,
+    urls: ['https://remotive.com/api/remote-jobs?limit=60'],
+    searchUrl: (kw) => 'https://remotive.com/api/remote-jobs?limit=60&search=' + kw
+  },
+  {
+    id: 'jobicy', parseAs: 'json', normalize: normalizeJobicy,
+    urls: ['https://jobicy.com/api/v2/remote-jobs?count=50&industry=engineering'],
+    searchUrl: null
+  },
+  {
+    id: 'remoteok', parseAs: 'json', normalize: normalizeRemoteok,
+    urls: ['https://remoteok.com/api'], searchUrl: null
+  },
+  {
+    id: 'weworkremotely', parseAs: 'text', normalize: normalizeWwrRss, slow: 1500,
+    urls: ['https://weworkremotely.com/categories/remote-programming-jobs.rss'], searchUrl: null
+  },
+  {
+    id: 'themuse', parseAs: 'json', normalize: normalizeThemuse,
+    urls: ['https://www.themuse.com/api/public/jobs?page=1'],
+    searchUrl: (kw) => 'https://www.themuse.com/api/public/jobs?page=1&category=Software+Engineering'
+  },
+  {
+    // XING (DACH): listing -> detail JSON-LD. No open API.
+    id: 'xing', kind: 'html', base: 'https://www.xing.com', slow: 1500, maxDetails: 10,
+    linkRe: '/jobs/[a-z0-9][a-z0-9-]*-\\d{6,}',
+    listing: (criteria, kw) => 'https://www.xing.com/jobs/search?keywords=' +
+      encodeURIComponent([kw, criteria.location.split(/[,;]/)[0]].filter(Boolean).join(' '))
+  },
+  {
+    // Stepstone (DE): listing -> detail JSON-LD. No open API.
+    id: 'stepstone', kind: 'html', base: 'https://www.stepstone.de', slow: 2000, maxDetails: 10,
+    linkRe: '/stellenangebote--[^"\'#?]+?\\.html',
+    listing: (criteria, kw) => 'https://www.stepstone.de/jobs/' +
+      encodeURIComponent(String(kw || 'software').replace(/\s+/g, '-'))
+  },
+  {
+    // NoFluffJobs (PL/remote): listing -> detail JSON-LD (public, but scraper).
+    id: 'nofluffjobs', kind: 'html', base: 'https://nofluffjobs.com', slow: 1500, maxDetails: 10,
+    linkRe: '/pl/job/[a-z0-9][a-z0-9-]+',
+    listing: (criteria, kw) => 'https://nofluffjobs.com/pl/backend?criteria=keyword%3D%22' +
+      encodeURIComponent(kw || 'software') + '%22'
+  },
+  {
+    // pracuj.pl (PL). NOTE: currently behind a Cloudflare JS challenge — the
+    // server-side fetch is rejected with 403, so this source reports a clear
+    // "blocked" error instead of silently returning nothing.
+    id: 'pracuj', kind: 'html', base: 'https://it.pracuj.pl', slow: 2000, maxDetails: 10,
+    linkRe: '/praca/[a-z0-9][a-z0-9-]*,[a-z0-9]+;kw',
+    listing: (criteria, kw) => 'https://it.pracuj.pl/praca/' + encodeURIComponent((kw || 'software').replace(/\s+/g, '-')) + ';kw'
+  },
+  {
+    id: 'sample', parseAs: 'json', normalize: normalizeJobSample,
+    urls: [], searchUrl: null, fetcher: sampleFetcher
+  }
+];
+
+// Strip HTML into readable plain text (keeps paragraph breaks). Some feeds
+// deliver entity-escaped HTML ("&lt;p&gt;..."), so decode first; then strip
+// tags; then decode once more to catch double-encoded entities.
+function offerHtmlToText(html) {
+  let t = decodeEntities(String(html || ''));
+  t = t.replace(/<\s*(script|style)[\s\S]*?<\s*\/\s*\1\s*>/gi, ' ');
+  t = t.replace(/<\s*br\s*\/?\s*>/gi, '\n');
+  t = t.replace(/<\s*\/\s*(p|div|li|tr|h[1-6])\s*>/gi, '\n');
+  t = t.replace(/<[^>]+>/g, ' ');
+  t = decodeEntities(t);
+  t = t.replace(/\r/g, '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  return t;
+}
+
+function offerClean(v, max) {
+  return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, max || 400);
+}
+
+// Normalizers: source payload -> one common offer shape.
+function normalizeArbeitnow(json) {
+  const out = [];
+  for (const j of (json && json.data) || []) {
+    if (!j || !j.title) continue;
+    const description = offerHtmlToText(j.description);
+    if (description.length < 100) continue;
+    out.push({
+      source: 'arbeitnow', title: offerClean(j.title, 160), company: offerClean(j.company_name, 120),
+      location: offerClean(j.location, 120), workplace: j.remote ? 'remote' : 'onsite',
+      url: offerClean(j.url, 500), applyUrl: offerClean(j.url, 500),
+      salary: '', savedAt: offerClean(j.created_at, 20), description
+    });
+  }
+  return out;
+}
+function normalizeRemotive(json) {
+  const out = [];
+  for (const j of (json && json.jobs) || []) {
+    if (!j || !j.title) continue;
+    const description = offerHtmlToText(j.description);
+    if (description.length < 100) continue;
+    out.push({
+      source: 'remotive', title: offerClean(j.title, 160), company: offerClean(j.company_name, 120),
+      location: offerClean(j.candidate_required_location || 'Remote', 120), workplace: 'remote',
+      url: offerClean(j.url, 500), applyUrl: offerClean(j.apply_url || j.url, 500),
+      salary: offerClean(j.salary, 120), savedAt: offerClean(j.publication_date, 20), description
+    });
+  }
+  return out;
+}
+function normalizeJobicy(json) {
+  const out = [];
+  for (const j of (json && json.jobs) || []) {
+    if (!j || !j.jobTitle) continue;
+    const description = offerHtmlToText(j.jobDescription);
+    if (description.length < 100) continue;
+    const wl = String(j.jobGeo || '');
+    out.push({
+      source: 'jobicy', title: offerClean(j.jobTitle, 160), company: offerClean(j.companyName, 120),
+      location: offerClean(wl || 'Remote', 120), workplace: 'remote',
+      url: offerClean(j.url, 500), applyUrl: offerClean(j.url, 500),
+      salary: offerClean(j.annualSalaryMin && j.annualSalaryMax ? (j.annualSalaryMin + '-' + j.annualSalaryMax + ' ' + (j.salaryCurrency || '')) : '', 120),
+      savedAt: offerClean(j.pubDate, 20), description
+    });
+  }
+  return out;
+}
+function normalizeRemoteok(json) {
+  const out = [];
+  for (const j of Array.isArray(json) ? json : []) {
+    if (!j || !j.position) continue;
+    const description = offerHtmlToText(j.description);
+    if (description.length < 100) continue;
+    out.push({
+      source: 'remoteok', title: offerClean(j.position, 160), company: offerClean(j.company, 120),
+      location: offerClean(j.location || 'Remote', 120), workplace: 'remote',
+      url: offerClean(j.url, 500), applyUrl: offerClean(j.apply_url || j.url, 500),
+      salary: offerClean(j.salary, 120), savedAt: offerClean(j.date, 20), description
+    });
+  }
+  return out;
+}
+function normalizeWwrRss(xml) {
+  const out = [];
+  const items = String(xml || '').split(/<item[\s>]/i).slice(1);
+  for (const it of items) {
+    const pick = (tag) => {
+      const m = it.match(new RegExp('<' + tag + '>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?<\\/' + tag + '>', 'i'));
+      return m ? decodeEntities(m[1]) : '';
+    };
+    const rawTitle = offerClean(pick('title'), 200);
+    if (!rawTitle) continue;
+    const idx = rawTitle.indexOf(':');
+    const company = idx > 0 ? offerClean(rawTitle.slice(0, idx), 120) : '';
+    const title = offerClean(idx > 0 ? rawTitle.slice(idx + 1) : rawTitle, 160);
+    const description = offerHtmlToText(pick('description'));
+    if (description.length < 100) continue;
+    out.push({
+      source: 'weworkremotely', title, company, location: 'Remote', workplace: 'remote',
+      url: offerClean(pick('link'), 500), applyUrl: offerClean(pick('link'), 500),
+      salary: '', savedAt: offerClean(pick('pubDate'), 20), description
+    });
+  }
+  return out;
+}
+function normalizeThemuse(json) {
+  const out = [];
+  for (const j of (json && json.results) || []) {
+    if (!j || !j.name) continue;
+    const description = offerHtmlToText(j.contents);
+    if (description.length < 100) continue;
+    const locs = (j.locations || []).map((l) => l && l.name).filter(Boolean).join(', ');
+    const remote = /remote|flexible/i.test(locs);
+    out.push({
+      source: 'themuse', title: offerClean(j.name, 160),
+      company: offerClean((j.company && j.company.name) || '', 120),
+      location: offerClean(locs || 'Unknown', 120), workplace: remote ? 'remote' : 'onsite',
+      url: offerClean((j.refs && j.refs.landing_page) || '', 500),
+      applyUrl: offerClean((j.refs && j.refs.landing_page) || '', 500),
+      salary: '', savedAt: offerClean(j.publication_date, 20), description
+    });
+  }
+  return out;
+}
+
+// Fetch one source with timeout. `fetcher` is the real network call; tests
+// replace it with an offline stub.
+function jobSourceFetch(fetcher, url, parseAs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), JOB_FETCH_TIMEOUT_MS);
+  return fetcher(url, {
+    headers: { 'User-Agent': JOB_UA, 'Accept': parseAs === 'text' ? 'application/rss+xml, text/xml, */*' : 'application/json' },
+    signal: controller.signal
+  }).then(async (r) => {
+    if (!r || !r.ok) throw new Error('HTTP ' + ((r && r.status) || '?'));
+    const body = parseAs === 'text' ? await r.text() : await r.json();
+    return body;
+  }).finally(() => clearTimeout(timer));
+}
+
+// Fetch a raw HTML/text page with the scraper UA (used by the HTML portals).
+async function jobGetText(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), JOB_FETCH_TIMEOUT_MS);
+  try {
+    const r = await (globalThis.fetch)(url, {
+      headers: { 'User-Agent': JOB_UA, 'Accept-Language': 'en,de;q=0.8,pl;q=0.7', 'Accept': 'text/html,application/xhtml+xml' },
+      signal: controller.signal
+    });
+    if (!r || !r.ok) throw new Error('HTTP ' + ((r && r.status) || '?'));
+    return await r.text();
+  } catch (e) {
+    if (/\b(403|521|429)\b/.test(String(e && e.message))) {
+      throw new Error('blocked by anti-bot protection (Cloudflare) — this site needs a real browser to scrape');
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function jobFetchSource(src, criteria, ctx) {
+  // HTML portals (XING / Stepstone / NoFluffJobs): scrape listing + details.
+  if (src.kind === 'html') {
+    return jobFetchHtmlSource(src, criteria, ctx || { getText: (u) => jobGetText(u), delay: (src.slow || JOB_HOST_DELAY_MS) });
+  }
+  const kw = encodeURIComponent((criteria.keywords || '').split(/\s+/).filter(Boolean).slice(0, 4).join(' '));
+  const base = src.urls[0];
+  const url = kw && src.searchUrl ? src.searchUrl(kw) : base;
+  const json = await jobSourceFetch(src.fetcher || globalThis.fetch, url, src.parseAs);
+  return src.normalize(json);
+}
+
+// Pre-filter: workplace is a hard filter. Keywords and location drive RANKING
+// (title hits weigh most). Offers with no relevance at all are dropped: when
+// keywords are given, an offer must hit a keyword somewhere OR match the
+// location text, otherwise the AI drowns in unrelated listings.
+function jobPrefilter(pool, criteria) {
+  const kws = String(criteria.keywords || '').toLowerCase().split(/\s+/).filter((w) => w.length >= 2);
+  const locWords = String(criteria.location || '').toLowerCase().split(/[^a-z0-9]+/i).filter((w) => w.length >= 3 && !/^(onsite|remote|hybrid|and|the|for)$/.test(w));
+  const places = (criteria.workplace && criteria.workplace.length) ? criteria.workplace : ['remote', 'onsite', 'hybrid'];
+  const scored = [];
+  for (const o of pool) {
+    const wp = (o.workplace || 'remote').toLowerCase();
+    if (wp !== 'hybrid' && !places.includes(wp)) continue;
+    const title = String(o.title || '').toLowerCase();
+    const desc = String(o.description || '').toLowerCase();
+    let score = 0;
+    for (const w of kws) { if (title.includes(w)) score += 3; else if (desc.includes(w)) score += 1; }
+    const locHay = ((o.location || '') + ' ' + (o.workplace || '')).toLowerCase();
+    let locHit = false;
+    for (const w of locWords) if (locHay.includes(w)) { score += 4; locHit = true; }
+    if (kws.length && score === 0) continue;               // zero relevance -> drop
+    if (!kws.length && locWords.length && !locHit) continue;
+    scored.push({ o, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, JOB_MAX_POOL).map((x) => x.o);
+}
+
+// Build the strict-JSON instruction sent to the model for one batch.
+// The user's criteria — INCLUDING the free-text location field — are passed
+// through verbatim; the model is the one doing the matching.
+function jobAiPrompt(criteria, batch) {
+  const lines = batch.map((o, i) => (i + 1) + '. ' + [
+    o.title, o.company, o.location, o.workplace, (o.description || '').slice(0, 300)
+  ].join(' | '));
+  return [
+    'You are matching job offers to a candidate. You make the final decision; the offers below were only pre-ranked by keywords.',
+    '',
+    'Search criteria (verbatim from the user):',
+    '- Desired role / keywords: ' + (criteria.keywords || '(any)'),
+    '- Location / workplace (free text): ' + (criteria.location || '(any)'),
+    '- Allowed workplace types: ' + ((criteria.workplace && criteria.workplace.join(', ')) || 'any'),
+    '- Language requirements: ' + (criteria.languages || 'any'),
+    '',
+    'IMPORTANT about the "Location / workplace" field: it is free text and may list several alternatives combined with their workplace type, e.g. "Hamburg onsite, Poznan onsite, EU remotely". Interpret it as a list of OR-conditions: an offer matches if it satisfies ANY one of them, honouring the workplace word attached to each (onsite / remote / hybrid). Do not require all alternatives at once.',
+    '',
+    'Decision rules — be INCLUSIVE (prefer recall over precision):',
+    '- Include an offer when it is in the SAME role family as the desired role (e.g. team lead / engineering manager / staff or senior engineer in software or AI) AND satisfies at least ONE location alternative.',
+    '- A partial match is still a match: if the role fits but one detail differs (e.g. a different seniority label), include it and note the difference briefly in "reason".',
+    '- Only exclude offers that are clearly a different job family (sales, marketing, recruiting, finance, design, clinical, etc.) or fit no location alternative.',
+    '',
+    'For EACH offer decide if it matches. Answer ONLY with JSON, no prose:',
+    '{"matches":[{"id":<offer number>,"language":"<required workplace language(s) or \'undetermined\'>","reason":"<max 12 words>"}]}',
+    'Use the offer numbers below as ids. If several offers match, list them all.',
+    '',
+    'Offers:',
+    ...lines
+  ].join('\n');
+}
+
+// Parse the model reply defensively; keep only ids that exist in the batch.
+function parseJobAiReply(text, batchLen) {
+  const t = String(text || '');
+  const start = t.indexOf('{');
+  const end = t.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) return [];
+  let data;
+  try { data = JSON.parse(t.slice(start, end + 1)); } catch (e) { return []; }
+  const arr = Array.isArray(data) ? data : data.matches;
+  if (!Array.isArray(arr)) return [];
+  const out = [];
+  for (const m of arr) {
+    const id = parseInt(m && m.id, 10);
+    if (id >= 1 && id <= batchLen) {
+      out.push({ id, language: offerClean(m.language, 80), reason: offerClean(m.reason, 200) });
+    }
+  }
+  return out;
+}
+
+const JOB_AI_SYSTEM = 'You are a precise job-matching assistant. Answer with strict JSON only.';
+
+// Fetch all selected sources (throttled) and pre-rank the pool. Emits NDJSON
+// progress via `send`. Returns the ranked candidate list.
+async function jobHarvest(criteria, sources, delayMs, send) {
+  const pool = [];
+  for (let i = 0; i < sources.length; i++) {
+    const src = sources[i];
+    send({ event: 'source-start', source: src.id });
+    try {
+      const offers = await jobFetchSource(src, criteria);
+      for (const o of offers) pool.push(o);
+      send({ event: 'source-done', source: src.id, count: offers.length });
+    } catch (e) {
+      send({ event: 'source-failed', source: src.id, error: String((e && e.message) || e) });
+    }
+    const last = i === sources.length - 1;
+    if (!last) {
+      const gap = (src.slow || delayMs) + JOB_SOURCE_GAP_MS;
+      if (gap > 0) await new Promise((r) => setTimeout(r, gap));
+    }
+  }
+  const candidates = jobPrefilter(pool, criteria);
+  send({ event: 'prefilter', kept: candidates.length, fetched: pool.length });
+  return candidates;
+}
+
+// Split candidates into AI batches; each carries the exact prompt to send.
+function jobBuildBatches(candidates, criteria) {
+  const batches = [];
+  for (let i = 0; i < candidates.length; i += JOB_AI_BATCH) {
+    const slice = candidates.slice(i, i + JOB_AI_BATCH);
+    batches.push({ prompt: jobAiPrompt(criteria, slice), candidates: slice });
+  }
+  return batches;
+}
+
+// Send the batches to the model. `batches` may carry user-edited prompts.
+// Returns { aiById, anyAi, anyOk } where aiById is keyed per batch index.
+async function jobRunAiBatches(batches, modelIndex, delayMs, send) {
+  const aiByBatch = [];
+  let anyAi = false;
+  for (let b = 0; b < batches.length; b++) {
+    const batch = batches[b];
+    const candidates = Array.isArray(batch.candidates) ? batch.candidates : [];
+    const prompt = String(batch.prompt || '');
+    send({ event: 'ai-progress', done: b, total: batches.length });
+    const hits = [];
+    try {
+      const built = await buildPayload([{ role: 'user', content: prompt }], modelIndex, [], null, JOB_AI_SYSTEM);
+      const headers = { 'Content-Type': 'application/json' };
+      if (built.apiKey) headers['Authorization'] = 'Bearer ' + built.apiKey;
+      const upstream = await fetch(built.endpoint, { method: 'POST', headers, body: JSON.stringify(built.payload) });
+      if (!upstream.ok) throw new Error('model HTTP ' + upstream.status);
+      const data = await upstream.json();
+      const content = (data.message && data.message.content) ||
+        ((data.choices && data.choices[0] && data.choices[0].message) ? data.choices[0].message.content : '');
+      for (const m of parseJobAiReply(content, candidates.length)) {
+        const o = candidates[m.id - 1];
+        if (o) hits.push({ idx: m.id - 1, language: m.language, reason: m.reason });
+      }
+      anyAi = true;
+    } catch (e) {
+      send({ event: 'ai-error', error: String((e && e.message) || e) });
+    }
+    aiByBatch.push(hits);
+    if (b < batches.length - 1 && delayMs > 0) await new Promise((r) => setTimeout(r, Math.min(delayMs, 400)));
+  }
+  send({ event: 'ai-progress', done: batches.length, total: batches.length });
+  return { aiByBatch, anyAi };
+}
+
+// Compose the final bulk offers from the batches + per-batch AI hits. When the
+// AI produced nothing, fall back to the pre-ranked candidates (still useful).
+function jobComposeOffers(batches, aiByBatch, anyAi) {
+  const all = [];
+  for (let b = 0; b < batches.length; b++) {
+    const candidates = batches[b].candidates || [];
+    const hits = aiByBatch[b] || [];
+    for (const h of hits) {
+      const o = candidates[h.idx];
+      if (o) all.push({ o, meta: { language: h.language, reason: h.reason } });
+    }
+  }
+  // Fallback when the AI produced nothing usable: if there were no matches at
+  // all (or no AI answer), surface the top pre-ranked candidates so the user
+  // still gets a reviewable list instead of an empty panel.
+  if (!all.length) {
+    const ranked = [];
+    for (const batch of batches) for (const o of (batch.candidates || [])) ranked.push(o);
+    for (const o of ranked.slice(0, JOB_MAX_RESULTS)) all.push({ o, meta: null });
+  }
+  return all.slice(0, JOB_MAX_RESULTS).map(({ o, meta }) => ({
+    title: o.title, company: o.company, location: o.location, url: o.applyUrl || o.url,
+    status: '', workplace: o.workplace, workplaceType: o.workplace, salary: o.salary,
+    savedAt: o.savedAt, source: o.source,
+    language: meta ? meta.language : '',
+    aiReason: meta ? meta.reason : '',
+    aiChecked: !!meta,
+    description: o.description
+  }));
+}
+
+function jobSourcesFrom(criteria) {
+  const sel = Array.isArray(criteria.sources) ? criteria.sources : [];
+  return JOB_SOURCES.filter((s) => sel.includes(s.id));
+}
+
+// Short-lived in-memory cache of harvested candidates, keyed by a search id, so
+// the approval round-trip only carries the prompts (not the full descriptions).
+const JOB_CACHE_MAX = 8;
+const jobSearchCache = new Map(); // id -> { createdAt, batches: [{ prompt, candidates }] }
+function jobCachePut(batches) {
+  const id = Date.now().toString(36) + crypto.randomBytes(3).toString('hex');
+  jobSearchCache.set(id, { createdAt: Date.now(), batches });
+  while (jobSearchCache.size > JOB_CACHE_MAX) jobSearchCache.delete(jobSearchCache.keys().next().value);
+  return id;
+}
+function jobCacheGet(id) {
+  const e = jobSearchCache.get(String(id || ''));
+  if (!e) return null;
+  if (Date.now() - e.createdAt > 30 * 60 * 1000) { jobSearchCache.delete(id); return null; }
+  return e;
+}
+
+// Step 1: fetch + pre-rank + build the prompts. NO model call — the client
+// shows the prompts for approval first.
+app.post('/api/job-search/preview', async (req, res) => {
+  const criteria = req.body || {};
+  const sources = jobSourcesFrom(criteria);
+  const delayMs = (criteria.delayMs !== undefined) ? Number(criteria.delayMs) : JOB_HOST_DELAY_MS;
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.flushHeaders();
+  const send = (obj) => { try { res.write(JSON.stringify(obj) + '\n'); } catch (_) {} };
+  send({ event: 'start', sources: sources.map((s) => s.id), phase: 'preview' });
+  const candidates = await jobHarvest(criteria, sources, delayMs, send);
+  const batches = jobBuildBatches(candidates, criteria);
+  const searchId = jobCachePut(batches);
+  send({
+    event: 'preview', searchId, candidates: candidates.length,
+    modelIndex: (criteria.modelIndex != null ? criteria.modelIndex : null),
+    batches: batches.map((b, i) => ({
+      index: i, count: b.candidates.length, prompt: b.prompt,
+      offers: b.candidates.map((o) => ({ title: o.title, company: o.company, location: o.location, workplace: o.workplace }))
+    }))
+  });
+  send({ event: 'done', phase: 'preview' });
+  res.end();
+});
+
+// Step 2: send the approved (possibly user-edited) prompts to the model and
+// compose the bulk offers. Identified by searchId; prompts are index-aligned.
+app.post('/api/job-search/run', async (req, res) => {
+  const body = req.body || {};
+  const cached = jobCacheGet(body.searchId);
+  const modelIndex = (body.modelIndex !== undefined && body.modelIndex !== null) ? body.modelIndex : undefined;
+  const delayMs = (body.delayMs !== undefined) ? Number(body.delayMs) : JOB_HOST_DELAY_MS;
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.flushHeaders();
+  const send = (obj) => { try { res.write(JSON.stringify(obj) + '\n'); } catch (_) {} };
+
+  let batches;
+  if (cached) {
+    // Client-side overrides: prompts (strings) and/or per-batch offer removal.
+    const prompts = Array.isArray(body.prompts) ? body.prompts : [];
+    const skip = Array.isArray(body.skip) ? body.skip : [];
+    batches = cached.batches
+      .map((b, i) => ({ candidates: b.candidates, prompt: (typeof prompts[i] === 'string' ? prompts[i] : b.prompt) }))
+      .filter((b, i) => !skip.includes(i));
+  } else if (Array.isArray(body.batches) && body.batches.length) {
+    // Stateless fallback (programmatic callers / tests).
+    batches = body.batches.map((b) => ({ candidates: Array.isArray(b.candidates) ? b.candidates : [], prompt: String(b.prompt || '') }));
+  } else {
+    return res.status(400).json({ error: 'Unknown searchId and no batches supplied' });
+  }
+  if (!batches.length) return res.status(400).json({ error: 'No batches' });
+
+  send({ event: 'start', phase: 'run', batches: batches.length });
+  const { aiByBatch, anyAi } = await jobRunAiBatches(batches, modelIndex, delayMs, send);
+  const offers = jobComposeOffers(batches, aiByBatch, anyAi);
+  flagStoredOffers(offers);
+  send({ event: 'done', offers, aiChecked: anyAi, total: offers.length });
+  res.end();
+});
+
+// Convenience one-shot path (no approval step): fetch -> AI -> offers.
+// Kept for programmatic callers and the API test suite.
+app.post('/api/job-search', async (req, res) => {
+  const criteria = req.body || {};
+  const sources = jobSourcesFrom(criteria);
+  const modelIndex = (criteria.modelIndex !== undefined && criteria.modelIndex !== null) ? criteria.modelIndex : undefined;
+  const delayMs = (criteria.delayMs !== undefined) ? Number(criteria.delayMs) : JOB_HOST_DELAY_MS;
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.flushHeaders();
+  const send = (obj) => { try { res.write(JSON.stringify(obj) + '\n'); } catch (_) {} };
+  send({ event: 'start', sources: sources.map((s) => s.id) });
+  const candidates = await jobHarvest(criteria, sources, delayMs, send);
+  const batches = jobBuildBatches(candidates, criteria);
+  const { aiByBatch, anyAi } = await jobRunAiBatches(batches, modelIndex, delayMs, send);
+  const offers = jobComposeOffers(batches, aiByBatch, anyAi);
+  flagStoredOffers(offers);
+  send({ event: 'done', offers, aiChecked: anyAi, total: offers.length });
+  res.end();
+});
+
 function parseOfferFile(text) {
   const all = [];
   for (const chunk of splitHtmlOffers(text)) {
@@ -1909,7 +2565,23 @@ if (require.main !== module) {
     offerSimilarity,
     offerTokens,
     extractText,
-    cleanFileName
+    cleanFileName,
+    offerHtmlToText,
+    normalizeArbeitnow,
+    normalizeRemotive,
+    normalizeJobicy,
+    normalizeRemoteok,
+    normalizeWwrRss,
+    normalizeThemuse,
+    normalizeJobSample,
+    parseJsonLdJobPostings,
+    normalizeJsonLdOffer,
+    jsonLdSalary,
+    jsonLdLocation,
+    jobPrefilter,
+    jobAiPrompt,
+    parseJobAiReply,
+    JOB_SOURCES
   };
 } else {
   app.listen(PORT, () => {

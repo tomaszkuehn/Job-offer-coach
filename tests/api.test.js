@@ -158,6 +158,60 @@ test('POST /api/context-size computes chars/tokens', async () => {
   assert.ok(data.tokens > 0);
 });
 
+test('POST /api/job-search streams NDJSON and builds bulk offers (offline sample)', async () => {
+  const r = await fetch(BASE + '/api/job-search', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      keywords: 'ai software', location: '', languages: 'english only',
+      workplace: ['remote', 'onsite', 'hybrid'], sources: ['sample'], modelIndex: 0
+    })
+  });
+  assert.strictEqual(r.status, 200);
+  const text = await r.text();
+  const events = text.split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  const kinds = events.map((e) => e.event);
+  assert.ok(kinds.includes('start'), 'start event');
+  assert.ok(kinds.includes('source-done'), 'source-done event');
+  assert.ok(kinds.includes('prefilter'), 'prefilter event');
+  assert.ok(kinds.includes('done'), 'done event');
+  const done = events.find((e) => e.event === 'done');
+  assert.ok(Array.isArray(done.offers) && done.offers.length > 0, 'offers returned');
+  for (const o of done.offers) {
+    assert.ok(o.description && o.description.length >= 100, 'description >= 100 chars (bulk requirement)');
+    assert.ok(o.url, 'apply url present');
+    assert.ok(o.company && o.location, 'company + location present');
+    assert.strictEqual(o.source, 'sample');
+  }
+  // Model endpoint is unreachable in the sandbox -> unfiltered fallback, still valid.
+  assert.strictEqual(done.aiChecked, false);
+});
+
+test('POST /api/job-search/preview builds prompts without calling the model', async () => {
+  const r = await fetch(BASE + '/api/job-search/preview', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      keywords: 'ai software', location: 'Hamburg onsite, Poznan onsite, EU remotely', languages: 'english only',
+      workplace: ['remote', 'onsite', 'hybrid'], sources: ['sample'], modelIndex: 0
+    })
+  });
+  assert.strictEqual(r.status, 200);
+  const events = (await r.text()).split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  const preview = events.find((e) => e.event === 'preview');
+  assert.ok(preview && preview.searchId, 'preview carries a searchId');
+  assert.ok(preview.batches.length >= 1, 'at least one batch');
+  assert.match(preview.batches[0].prompt, /Hamburg onsite, Poznan onsite, EU remotely/, 'location text is verbatim in the prompt');
+  assert.ok(!events.some((e) => e.event === 'ai-progress'), 'no model call during preview');
+  // Step 2: run the approved prompt (model unreachable -> fallback offers).
+  const run = await fetch(BASE + '/api/job-search/run', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ searchId: preview.searchId, prompts: preview.batches.map((b) => b.prompt), modelIndex: 0 })
+  });
+  const runEvents = (await run.text()).split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  const done = runEvents.find((e) => e.event === 'done');
+  assert.ok(done && Array.isArray(done.offers), 'run returns offers');
+  for (const o of done.offers) assert.ok(o.description && o.description.length >= 100, 'bulk-ready description');
+});
+
 test('DELETE /api/conversations/:id removes it (sandbox only)', async () => {
   const r = await fetch(BASE + '/api/conversations/testconv000001', { method: 'DELETE' });
   assert.strictEqual(r.status, 200);

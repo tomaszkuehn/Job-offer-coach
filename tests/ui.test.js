@@ -213,6 +213,43 @@ test('bulk dialog opens, empty state, and closes', async () => {
   await pause();
 });
 
+test('job search overlay: offline sample search produces results and loads to bulk', async () => {
+  await page.click('#jobSearchBtn');
+  await page.waitForSelector('#jobSearchOverlay.show');
+  await pause(700);
+  // Use the offline sample source only (deterministic, no network).
+  await page.click('#jsBody [data-js-src="arbeitnow"]');
+  await page.click('#jsBody [data-js-src="remotive"]');
+  await page.click('#jsBody [data-js-src="jobicy"]');
+  await page.click('#jsBody [data-js-src="remoteok"]');
+  await page.click('#jsBody [data-js-src="sample"]');
+  await page.fill('#jsKeywords', 'ai software');
+  await page.fill('#jsLocation', 'Hamburg onsite, Poznan onsite, EU remotely');
+  await pause(300);
+  await page.click('#jsSearch');
+  // Step 1 shows the prompt for approval before any AI call.
+  await page.waitForSelector('#jsPromptWrap', { state: 'visible', timeout: 20000 });
+  const prompt = await page.inputValue('#jsPromptView');
+  assert.match(prompt, /Hamburg onsite, Poznan onsite, EU remotely/, 'free-text location is passed verbatim into the prompt');
+  await pause(500);
+  // Step 2: approve and run the AI (model unreachable in sandbox -> fallback).
+  await page.click('#jsApprove');
+  await page.waitForFunction(() => document.querySelectorAll('#jsOffers .bulk-offer').length > 0, { timeout: 20000 });
+  await pause(900);
+  const rows = await page.$$eval('#jsOffers .bulk-offer', (els) => els.length);
+  assert.ok(rows > 0, 'sample search should render result rows');
+  assert.strictEqual(await page.locator('#jsDownload').isEnabled(), true, 'download button enabled after results');
+  // Load into the existing bulk pipeline.
+  await page.click('#jsLoadBulk');
+  await page.waitForSelector('#bulkOverlay.show');
+  await pause(900);
+  const bulkRows = await page.$$eval('#bulkOffers .bulk-offer', (els) => els.length);
+  assert.ok(bulkRows > 0, 'job results are handed over to the bulk dialog');
+  await page.click('#bulkClose');
+  await page.waitForFunction(() => !document.querySelector('#bulkOverlay').classList.contains('show'));
+  await pause();
+});
+
 test('metrics status cell cycles to_apply -> not_applying -> clear', async () => {
   await page.click('#metricsBtn');
   await page.waitForSelector('#metricsOverlay.show .metrics-table');

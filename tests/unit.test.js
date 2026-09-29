@@ -121,3 +121,174 @@ test('normalizeTagsInput: legacy booleans', () => {
 test('normalizeTagsInput: empty object -> empty patch (no-op)', () => {
   assert.deepStrictEqual(s.normalizeTagsInput({}), {});
 });
+
+// ---- job search: html -> text ----
+test('offerHtmlToText: strips tags, keeps breaks, decodes entities', () => {
+  const t = s.offerHtmlToText('<p>Hello&nbsp;<b>World</b></p><ul><li>One</li><li>Two</li></ul><script>x</script>');
+  assert.ok(t.includes('Hello World'));
+  assert.ok(t.includes('One'));
+  assert.ok(t.includes('Two'));
+  assert.ok(!t.includes('script'));
+  assert.ok(!t.includes('<'));
+});
+
+test('offerHtmlToText: decodes entity-escaped HTML (themus/arbeitnow feeds)', () => {
+  const t = s.offerHtmlToText('&lt;div&gt;&lt;p&gt;About us&lt;/p&gt;&lt;p&gt;Senior &amp;amp; Lead&lt;/p&gt;&lt;/div&gt;');
+  assert.ok(t.includes('About us'));
+  assert.ok(t.includes('Senior & Lead'), 'double-encoded entity decoded: ' + t);
+  assert.ok(!t.includes('<') && !t.includes('&lt;'));
+});
+
+// ---- job search: source normalizers ----
+test('normalizeArbeitnow: maps remote flag and drops short descriptions', () => {
+  const out = s.normalizeArbeitnow({ data: [
+    { title: 'Dev', company_name: 'ACME', location: 'Hamburg', remote: false, url: 'https://a/1', description: 'x'.repeat(150) },
+    { title: 'Too Short', company_name: 'X', location: 'Y', remote: true, url: 'https://a/2', description: 'short' }
+  ] });
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].workplace, 'onsite');
+  assert.strictEqual(out[0].source, 'arbeitnow');
+});
+
+test('normalizeRemotive: prefers apply_url, remote workplace', () => {
+  const out = s.normalizeRemotive({ jobs: [{ title: 'Lead', company_name: 'ACME', url: 'https://r/1', apply_url: 'https://r/apply', description: 'y'.repeat(150) }] });
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].applyUrl, 'https://r/apply');
+  assert.strictEqual(out[0].workplace, 'remote');
+});
+
+test('normalizeThemuse: detects remote from location list', () => {
+  const out = s.normalizeThemuse({ results: [{ name: 'Eng', company: { name: 'ACME' }, locations: [{ name: 'Remote' }], contents: '<p>' + 'z'.repeat(150) + '</p>', refs: { landing_page: 'https://t/1' } }] });
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].workplace, 'remote');
+});
+
+test('normalizeWwrRss: splits "Company: Title", parses items', () => {
+  const xml = '<rss><channel><item><title>ACME: Senior Dev</title><link>https://w/1</link><description><![CDATA[<p>' + 'q'.repeat(150) + '</p>]]></description></item></channel></rss>';
+  const out = s.normalizeWwrRss(xml);
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].company, 'ACME');
+  assert.strictEqual(out[0].title, 'Senior Dev');
+});
+
+// ---- job search: prefilter + prompt + AI reply ----
+const JP = (t, d, wp, loc) => ({ title: t, description: d, workplace: wp, location: loc, company: 'C', source: 's' });
+test('jobPrefilter: keyword hit in title ranks first', () => {
+  const pool = [
+    JP('Team Lead Software', 'AI products and coaching engineers', 'remote', 'Europe'),
+    JP('Senior AI Engineer', 'build llm systems and lead', 'remote', 'Europe')
+  ];
+  const kept = s.jobPrefilter(pool, { keywords: 'team lead software', workplace: ['remote', 'onsite', 'hybrid'] });
+  assert.strictEqual(kept.length, 2);
+  assert.strictEqual(kept[0].title, 'Team Lead Software', 'title hit outranks description-only hit');
+});
+
+test('jobPrefilter: drops offers with zero keyword relevance', () => {
+  const pool = [JP('Chef', 'cooking italian food', 'onsite', 'Rome'), JP('AI Dev', 'build llm systems', 'remote', 'Europe')];
+  const kept = s.jobPrefilter(pool, { keywords: 'quantum', workplace: ['remote', 'onsite', 'hybrid'] });
+  assert.strictEqual(kept.length, 0, 'irrelevant offers are dropped so the AI does not drown in noise');
+});
+
+test('jobPrefilter: workplace filter excludes onsite when only remote wanted', () => {
+  const pool = [JP('AI Engineer', 'build llm systems', 'onsite', 'Berlin'), JP('AI Dev', 'build llm systems', 'remote', 'Europe')];
+  const kept = s.jobPrefilter(pool, { keywords: 'ai', workplace: ['remote'] });
+  assert.strictEqual(kept.length, 1, 'workplace remains a hard filter');
+  assert.strictEqual(kept[0].workplace, 'remote');
+});
+
+test('jobPrefilter: keeps all workplaces when keyword unmatched', () => {
+  const pool = [JP('AI Chef', 'cooking with ai food', 'onsite', 'Rome'), JP('AI Dev', 'build llm systems', 'remote', 'Europe')];
+  const kept = s.jobPrefilter(pool, { keywords: 'ai', workplace: ['remote', 'onsite', 'hybrid'] });
+  assert.strictEqual(kept.length, 2, 'both match the keyword, so both survive');
+});
+
+test('jobPrefilter: free-text location with workplace words ranks matching offers first', () => {
+  const pool = [
+    JP('Rola A', 'desc a', 'onsite', 'Rome'),
+    JP('Rola B', 'desc b', 'onsite', 'Hamburg'),
+    JP('Rola C', 'desc c', 'remote', 'EU')
+  ];
+  const kept = s.jobPrefilter(pool, { keywords: '', location: 'Hamburg onsite, Poznan onsite, EU remotely', workplace: ['remote', 'onsite', 'hybrid'] });
+  assert.strictEqual(kept[0].location, 'Hamburg', 'Hamburg offer ranks first');
+});
+
+test('jobAiPrompt: carries criteria and numbered offers', () => {
+  const p = s.jobAiPrompt({ keywords: 'ai lead', location: 'Hamburg onsite, EU remotely', workplace: ['onsite'], languages: 'english only' }, [JP('X', 'desc', 'onsite', 'Hamburg')]);
+  assert.ok(p.includes('english only'));
+  assert.ok(p.includes('Hamburg onsite, EU remotely'), 'location field is verbatim in the prompt');
+  assert.ok(p.includes('1. X'));
+});
+
+test('parseJobAiReply: extracts matches, ignores out-of-range ids and junk', () => {
+  const r = s.parseJobAiReply('{"matches":[{"id":1,"language":"English","reason":"good fit"},{"id":99,"language":"x","reason":"ghost"}]}', 2);
+  assert.strictEqual(r.length, 1);
+  assert.strictEqual(r[0].id, 1);
+  assert.strictEqual(r[0].language, 'English');
+});
+
+test('parseJobAiReply: malformed -> empty (no crash)', () => {
+  assert.deepStrictEqual(s.parseJobAiReply('no json here', 3), []);
+  assert.deepStrictEqual(s.parseJobAiReply('{broken', 3), []);
+});
+
+test('JOB_SOURCES: sample source exists and needs no network', () => {
+  const sample = s.JOB_SOURCES.find((x) => x.id === 'sample');
+  assert.ok(sample);
+  assert.strictEqual(s.normalizeJobSample().length, 8);
+});
+
+// ---- job search: XING / Stepstone / NoFluffJobs (JSON-LD JobPosting) ----
+test('parseJsonLdJobPostings: extracts JobPosting from flat and @graph forms', () => {
+  const flat = '<script type="application/ld+json">' + JSON.stringify({ '@type': 'JobPosting', title: 'Flat' }) + '</script>';
+  const graph = '<script type="application/ld+json">' + JSON.stringify({ '@context': 'https://schema.org', '@graph': [{ '@type': 'Organization' }, { '@type': 'JobPosting', title: 'Graph' }] }) + '</script>';
+  assert.strictEqual(s.parseJsonLdJobPostings(flat).length, 1);
+  const g = s.parseJsonLdJobPostings(graph);
+  assert.strictEqual(g.length, 1);
+  assert.strictEqual(g[0].title, 'Graph');
+});
+
+test('parseJsonLdJobPostings: malformed JSON is skipped, not fatal', () => {
+  const html = '<script type="application/ld+json">{broken</script><script type="application/ld+json">' + JSON.stringify({ '@type': 'JobPosting', title: 'OK' }) + '</script>';
+  const r = s.parseJsonLdJobPostings(html);
+  assert.strictEqual(r.length, 1);
+  assert.strictEqual(r[0].title, 'OK');
+});
+
+test('jsonLdLocation / jsonLdSalary: address and range formatting', () => {
+  const loc = s.jsonLdLocation({ jobLocation: { address: { addressLocality: 'Hamburg', addressRegion: 'HH', addressCountry: 'DE' } } });
+  assert.strictEqual(loc, 'Hamburg, HH, DE');
+  const sal = s.jsonLdSalary({ baseSalary: { currency: 'PLN', value: { minValue: 15000, maxValue: 25000, unitText: 'MONTH' } } });
+  assert.match(sal, /15000-25000 PLN/);
+});
+
+test('normalizeJsonLdOffer: maps JobPosting and drops short descriptions', () => {
+  const base = {
+    '@type': 'JobPosting', title: 'Lead Software Developer', datePosted: '2026-09-29',
+    hiringOrganization: { '@type': 'Organization', name: 'SIGNAL IDUNA' },
+    jobLocation: { address: { addressLocality: 'Hamburg', addressCountry: 'DE' } },
+    description: 'x'.repeat(150), url: 'https://www.stepstone.de/x.html'
+  };
+  const o = s.normalizeJsonLdOffer(base, 'stepstone', 'https://fallback');
+  assert.strictEqual(o.company, 'SIGNAL IDUNA');
+  assert.strictEqual(o.source, 'stepstone');
+  assert.strictEqual(o.location, 'Hamburg, DE');
+  assert.strictEqual(o.workplace, 'onsite');
+  assert.strictEqual(s.normalizeJsonLdOffer({ ...base, description: 'short' }, 'x', 'u'), null);
+});
+
+test('normalizeJsonLdOffer: remote detection from title/description', () => {
+  const jp = {
+    '@type': 'JobPosting', title: 'Senior Developer (Remote)', description: 'y'.repeat(150),
+    hiringOrganization: { name: 'ACME' }, jobLocation: { address: { addressLocality: 'Kraków', addressCountry: 'PL' } }
+  };
+  assert.strictEqual(s.normalizeJsonLdOffer(jp, 'nofluffjobs', 'u').workplace, 'remote');
+});
+
+test('JOB_SOURCES: XING, Stepstone, NoFluffJobs, pracuj are wired as html sources', () => {
+  for (const id of ['xing', 'stepstone', 'nofluffjobs', 'pracuj']) {
+    const src = s.JOB_SOURCES.find((x) => x.id === id);
+    assert.ok(src, id + ' source present');
+    assert.strictEqual(src.kind, 'html', id + ' is an html source');
+    assert.ok(src.linkRe && src.listing, id + ' has linkRe + listing');
+  }
+});

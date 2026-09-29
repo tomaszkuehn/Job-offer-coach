@@ -465,6 +465,7 @@
         <button class="btn secondary" id="bulkBtn" style="flex:1">Bulk analysis</button>
         <button class="btn secondary" id="metricsBtn" style="flex:1">Metrics</button>
       </div>
+      <button class="btn secondary" id="jobSearchBtn" style="width:100%; margin-top:8px">Job search (internet)</button>
       <button class="btn secondary" id="backupBtn" style="width:100%; margin-top:8px">Backup &amp; restore</button>
     </div>
 
@@ -582,6 +583,74 @@
       <div class="overlay-foot">
         <button class="btn secondary" id="bulkCancel">Cancel</button>
         <button class="btn" id="bulkRun" disabled>Run analysis</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay" id="jobSearchOverlay">
+    <div class="overlay-box" style="max-width:760px">
+      <div class="overlay-head">
+        <div><h2>Job search (internet)</h2><div class="meta" id="jsMeta">Fetch real offers from public job APIs, then let the AI match them to your criteria.</div></div>
+        <button class="btn secondary" id="jsClose">&#x2715;</button>
+      </div>
+      <div class="overlay-body" id="jsBody" style="white-space:normal">
+        <div class="upload-row" style="gap:8px">
+          <div style="flex:1">
+            <label style="font-size:11px; color:#6b7280">Location</label>
+            <input type="text" id="jsLocation" placeholder="e.g. Hamburg, Poznan, Europe" style="width:100%" autocomplete="off" />
+          </div>
+          <div style="flex:1">
+            <label style="font-size:11px; color:#6b7280">Desired job / keywords</label>
+            <input type="text" id="jsKeywords" placeholder="e.g. team lead software AI" style="width:100%" autocomplete="off" />
+          </div>
+          <div style="flex:1">
+            <label style="font-size:11px; color:#6b7280">Language requirement</label>
+            <select id="jsLanguages" style="width:100%">
+              <option value="any">Any</option>
+              <option value="english only">English only (no German)</option>
+              <option value="german optional">German a plus, not required</option>
+              <option value="german required">German required</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-top:10px">
+          <span style="font-size:11px; color:#7b8794">Workplace:</span>
+          <button class="filter-chip active" data-js-wp="remote">remote</button>
+          <button class="filter-chip active" data-js-wp="onsite">onsite</button>
+          <button class="filter-chip active" data-js-wp="hybrid">hybrid</button>
+        </div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-top:8px">
+          <span style="font-size:11px; color:#7b8794">Sources:</span>
+          <button class="filter-chip active" data-js-src="arbeitnow">arbeitnow (DE)</button>
+          <button class="filter-chip active" data-js-src="remotive">remotive</button>
+          <button class="filter-chip active" data-js-src="jobicy">jobicy</button>
+          <button class="filter-chip active" data-js-src="remoteok">remoteok</button>
+          <button class="filter-chip" data-js-src="weworkremotely">weworkremotely</button>
+          <button class="filter-chip" data-js-src="themuse">themuse</button>
+          <button class="filter-chip" data-js-src="xing" title="XING (DACH) — scraped listing + JSON-LD, ~15-20s">xing (DACH)</button>
+          <button class="filter-chip" data-js-src="stepstone" title="Stepstone (DE) — scraped listing + JSON-LD, ~25s">stepstone (DE)</button>
+          <button class="filter-chip" data-js-src="nofluffjobs" title="NoFluffJobs (PL/remote) — scraped listing + JSON-LD, ~15s">nofluffjobs (PL)</button>
+          <button class="filter-chip" data-js-src="pracuj" title="pracuj.pl (PL) — currently blocked by Cloudflare from the server; usually fails">pracuj.pl (PL)</button>
+          <button class="filter-chip" data-js-src="sample" title="Built-in offline sample — no network, for demo/testing">sample (offline)</button>
+        </div>
+        <div id="jsPromptWrap" style="display:none; margin-top:12px">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px">
+            <strong style="font-size:12px; color:#1f2937">Prompt to send to the model — review &amp; edit before approval</strong>
+            <span id="jsBatchNav" style="font-size:11px; color:#7b8794"></span>
+            <span style="flex:1"></span>
+            <label style="font-size:11px; color:#6b7280"><input type="checkbox" id="jsBatchSkip" /> skip this batch</label>
+          </div>
+          <textarea id="jsPromptView" spellcheck="false" style="width:100%; height:220px; font-family:ui-monospace,Consolas,monospace; font-size:11px; line-height:1.35; border:1px solid #d6dbe1; border-radius:6px; padding:8px; white-space:pre"></textarea>
+        </div>
+        <div id="jsOffers" style="margin-top:12px; max-height:320px; overflow:auto"></div>
+      </div>
+      <div class="overlay-foot" style="gap:6px; flex-wrap:wrap">
+        <button class="btn secondary" id="jsDownload" disabled>Download bulk JSON</button>
+        <button class="btn secondary" id="jsLoadBulk" disabled>Load into Bulk analysis</button>
+        <span style="flex:1"></span>
+        <button class="btn secondary" id="jsStop" disabled>Stop</button>
+        <button class="btn" id="jsSearch">Search</button>
+        <button class="btn" id="jsApprove" style="display:none" disabled>Approve &amp; run AI</button>
       </div>
     </div>
   </div>
@@ -2328,6 +2397,361 @@ let streamingActive = false; // a model response is being streamed
     document.getElementById('bulkClose').addEventListener('click', closeBulkDialog);
     document.getElementById('bulkCancel').addEventListener('click', closeBulkDialog);
     bulkOverlay.addEventListener('click', (e) => { if (e.target === bulkOverlay) closeBulkDialog(); });
+
+    // ================= Job search (internet) =================
+    const jobSearchOverlay = document.getElementById('jobSearchOverlay');
+    const jsOffersEl = document.getElementById('jsOffers');
+    const jsMeta = document.getElementById('jsMeta');
+    const jsSearchBtn = document.getElementById('jsSearch');
+    const jsStopBtn = document.getElementById('jsStop');
+    const jsDownloadBtn = document.getElementById('jsDownload');
+    const jsLoadBulkBtn = document.getElementById('jsLoadBulk');
+    let jsRunning = false;
+    let jsAbort = null;
+    let jobResults = [];
+    let jsSearchId = null;      // server-side cache id from the preview step
+    let jsBatches = [];         // [{ index, count, prompt, offers, skip }]
+    let jsBatchIdx = 0;         // which prompt is shown in the editor
+
+    function jsSelectedWorkplace() {
+      return Array.prototype.slice.call(document.querySelectorAll('#jsBody [data-js-wp].active')).map((b) => b.getAttribute('data-js-wp'));
+    }
+    function jsSelectedSources() {
+      return Array.prototype.slice.call(document.querySelectorAll('#jsBody [data-js-src].active')).map((b) => b.getAttribute('data-js-src'));
+    }
+
+    function jobPersistCriteria() {
+      try {
+        localStorage.setItem('gemJobSearch', JSON.stringify({
+          location: document.getElementById('jsLocation').value,
+          keywords: document.getElementById('jsKeywords').value,
+          languages: document.getElementById('jsLanguages').value,
+          workplace: jsSelectedWorkplace(),
+          sources: jsSelectedSources()
+        }));
+      } catch (_) { /* quota — ignore */ }
+    }
+    function jobRestoreCriteria() {
+      let c = null;
+      try { c = JSON.parse(localStorage.getItem('gemJobSearch') || 'null'); } catch (_) {}
+      if (!c) return;
+      if (c.location) document.getElementById('jsLocation').value = c.location;
+      if (c.keywords) document.getElementById('jsKeywords').value = c.keywords;
+      if (c.languages) document.getElementById('jsLanguages').value = c.languages;
+      if (Array.isArray(c.workplace)) {
+        document.querySelectorAll('#jsBody [data-js-wp]').forEach((b) => b.classList.toggle('active', c.workplace.includes(b.getAttribute('data-js-wp'))));
+      }
+      if (Array.isArray(c.sources)) {
+        document.querySelectorAll('#jsBody [data-js-src]').forEach((b) => b.classList.toggle('active', c.sources.includes(b.getAttribute('data-js-src'))));
+      }
+    }
+    jobRestoreCriteria();
+
+    document.querySelectorAll('#jsBody [data-js-wp], #jsBody [data-js-src]').forEach((btn) => {
+      btn.addEventListener('click', () => { btn.classList.toggle('active'); jobPersistCriteria(); });
+    });
+
+    function openJobSearchDialog() {
+      jobSearchOverlay.classList.add('show');
+      renderJobResults();
+    }
+    function closeJobSearchDialog() {
+      if (jsRunning && jsAbort) jsAbort.abort();
+      jobSearchOverlay.classList.remove('show');
+    }
+
+    function renderJobResults() {
+      jsOffersEl.innerHTML = '';
+      const checkedCount = jobResults.filter((o) => o._checked).length;
+      if (!jobResults.length) {
+        jsOffersEl.innerHTML = '<div class="status">No results yet — set criteria and press Search.</div>';
+        jsDownloadBtn.disabled = true;
+        jsLoadBulkBtn.disabled = true;
+        return;
+      }
+      jobResults.forEach((o, i) => {
+        const row = document.createElement('div');
+        row.className = 'bulk-offer' + (o.duplicate ? ' duplicate' : '');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = o._checked;
+        cb.addEventListener('change', () => { o._checked = cb.checked; jsDownloadBtn.disabled = !jobResults.some((x) => x._checked); jsLoadBulkBtn.disabled = jsDownloadBtn.disabled; renderJobResults(); });
+        const main = document.createElement('div');
+        main.className = 'bo-main';
+        const t = document.createElement('div');
+        t.className = 'bo-title';
+        t.textContent = o.title || o.company || '(no title)';
+        if (o.source) {
+          const sc = document.createElement('span');
+          sc.className = 'bo-status';
+          sc.textContent = o.source;
+          t.appendChild(sc);
+        }
+        if (o.language) {
+          const lg = document.createElement('span');
+          lg.style.cssText = 'margin-left:8px; font-size:10px; color:#4a7c59';
+          lg.textContent = '🗣 ' + o.language;
+          t.appendChild(lg);
+        }
+        const sub = document.createElement('div');
+        sub.className = 'bo-sub';
+        sub.textContent = [o.company, o.location, o.workplaceType].filter(Boolean).join(' | ') + (o.description ? ' — ' + o.description.slice(0, 120).replace(/\s+/g, ' ') + '…' : '');
+        main.appendChild(t);
+        main.appendChild(sub);
+        main.style.cursor = 'pointer';
+        main.title = 'Click to preview the full offer';
+        main.addEventListener('click', () => showOfferPreview(o));
+        if (o.aiReason) {
+          const r = document.createElement('div');
+          r.className = 'bo-dup';
+          r.style.color = '#4a7c59';
+          r.textContent = 'AI: ' + o.aiReason;
+          main.appendChild(r);
+        }
+        if (o.duplicate) {
+          const dup = document.createElement('div');
+          dup.className = 'bo-dup';
+          dup.textContent = '\u26a0 Already analyzed in: ' + o.duplicate.name + ' (' + o.duplicate.similarity + '%)';
+          main.appendChild(dup);
+        }
+        row.appendChild(cb);
+        row.appendChild(main);
+        jsOffersEl.appendChild(row);
+      });
+      jsDownloadBtn.disabled = !checkedCount;
+      jsLoadBulkBtn.disabled = !checkedCount;
+      const anyAi = jobResults.some((o) => o.aiChecked);
+      const suffix = jobResults.length && !anyAi
+        ? ' (AI found no exact match — showing top pre-ranked candidates; review before applying)'
+        : '';
+      jsMeta.textContent = jobResults.length + ' result(s), ' + checkedCount + ' checked.' + suffix;
+    }
+
+    function jobResultsToBulk() {
+      return jobResults.filter((o) => o._checked).map((o) => ({
+        title: o.title, company: o.company, location: o.location, url: o.url,
+        status: '', workplace: o.workplaceType || o.workplace, workplaceType: o.workplaceType,
+        salary: o.salary, savedAt: o.savedAt, description: o.description
+      }));
+    }
+
+    // --- Prompt review (step 1b) ---
+    const jsPromptWrap = document.getElementById('jsPromptWrap');
+    const jsPromptView = document.getElementById('jsPromptView');
+    const jsBatchNav = document.getElementById('jsBatchNav');
+    const jsBatchSkip = document.getElementById('jsBatchSkip');
+    const jsApproveBtn = document.getElementById('jsApprove');
+
+    function jobStoreCurrentPrompt() {
+      if (jsBatches.length && jsBatches[jsBatchIdx]) {
+        jsBatches[jsBatchIdx].prompt = jsPromptView.value;
+      }
+    }
+    function showBatch(i) {
+      if (!jsBatches.length) return;
+      jsBatchIdx = Math.max(0, Math.min(i, jsBatches.length - 1));
+      const b = jsBatches[jsBatchIdx];
+      jsPromptView.value = b.prompt;
+      jsBatchSkip.checked = !!b.skip;
+      jsBatchNav.textContent = 'batch ' + (jsBatchIdx + 1) + ' / ' + jsBatches.length + ' (' + b.count + ' offers)';
+    }
+    jsPromptView.addEventListener('input', jobStoreCurrentPrompt);
+    jsPromptView.addEventListener('keydown', (e) => {
+      if (e.altKey && e.key === 'ArrowDown') { jobStoreCurrentPrompt(); showBatch(jsBatchIdx + 1); e.preventDefault(); }
+      if (e.altKey && e.key === 'ArrowUp') { jobStoreCurrentPrompt(); showBatch(jsBatchIdx - 1); e.preventDefault(); }
+    });
+    jsBatchSkip.addEventListener('change', () => { if (jsBatches[jsBatchIdx]) jsBatches[jsBatchIdx].skip = jsBatchSkip.checked; });
+    function resetPromptReview() {
+      jsBatches = [];
+      jsSearchId = null;
+      jsBatchIdx = 0;
+      jsPromptWrap.style.display = 'none';
+      jsApproveBtn.style.display = 'none';
+      jsApproveBtn.disabled = true;
+    }
+
+    async function runJobSearch() {
+      if (jsRunning) return;
+      const sources = jsSelectedSources();
+      if (!sources.length) { alert('Pick at least one source.'); return; }
+      jobPersistCriteria();
+      resetPromptReview();
+      jsRunning = true;
+      jsAbort = new AbortController();
+      jsSearchBtn.disabled = true;
+      jsStopBtn.disabled = false;
+      jsDownloadBtn.disabled = true;
+      jsLoadBulkBtn.disabled = true;
+      jobResults = [];
+      jsOffersEl.innerHTML = '<div class="status">Searching…</div>';
+      const counts = {};
+      try {
+        const resp = await fetch('/api/job-search/preview', {
+          method: 'POST',
+          signal: jsAbort.signal,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            keywords: document.getElementById('jsKeywords').value,
+            location: document.getElementById('jsLocation').value,
+            languages: document.getElementById('jsLanguages').value,
+            workplace: jsSelectedWorkplace(),
+            sources: sources,
+            modelIndex: activeModel
+          })
+        });
+        if (!resp.ok || !resp.body) {
+          const d = await resp.json().catch(() => ({}));
+          alert('Search failed: ' + (d.error || resp.status));
+        } else {
+          const reader = resp.body.getReader();
+          const dec = new TextDecoder();
+          let buf = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            const lines = buf.split('\n');
+            buf = lines.pop();
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              let ev;
+              try { ev = JSON.parse(line); } catch (_) { continue; }
+              if (ev.event === 'start') {
+                jsMeta.textContent = 'Fetching from: ' + (ev.sources || []).join(', ') + '…';
+              } else if (ev.event === 'source-start') {
+                jsMeta.textContent = 'Fetching ' + ev.source + '…';
+              } else if (ev.event === 'source-done') {
+                counts[ev.source] = ev.count;
+                jsMeta.textContent = ev.source + ': ' + ev.count + ' raw offers. ' + Object.keys(counts).map((k) => k + '=' + counts[k]).join(', ');
+              } else if (ev.event === 'source-failed') {
+                jsMeta.textContent = ev.source + ' failed: ' + ev.error + ' (continuing)';
+              } else if (ev.event === 'prefilter') {
+                jsMeta.textContent = 'Fetched ' + ev.fetched + ', ' + ev.kept + ' candidates. Review the prompt below, then approve.';
+              } else if (ev.event === 'preview') {
+                jsSearchId = ev.searchId;
+                jsBatches = (ev.batches || []).map((b) => Object.assign({ skip: false }, b));
+                if (jsBatches.length) {
+                  jsOffersEl.innerHTML = '<div class="status">Prompt ready — review and edit it above, then press “Approve &amp; run AI”.</div>';
+                  jsPromptWrap.style.display = 'block';
+                  jsApproveBtn.style.display = '';
+                  jsApproveBtn.disabled = false;
+                  showBatch(0);
+                } else {
+                  jsOffersEl.innerHTML = '<div class="status">No candidates fetched — nothing to send.</div>';
+                  jsMeta.textContent = 'No candidates.';
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') alert('Search error: ' + e.message);
+      }
+      jsAbort = null;
+      jsRunning = false;
+      jsSearchBtn.disabled = false;
+      jsStopBtn.disabled = true;
+    }
+
+    // Step 2: send approved prompts to the model, collect offers.
+    async function runJobApproved() {
+      if (jsRunning || !jsBatches.length) return;
+      jobStoreCurrentPrompt();
+      const prompts = jsBatches.map((b) => b.prompt);
+      const skip = jsBatches.map((b, i) => (b.skip ? i : -1)).filter((i) => i >= 0);
+      if (skip.length === jsBatches.length) { alert('All batches are skipped — nothing to send.'); return; }
+      jsRunning = true;
+      jsAbort = new AbortController();
+      jsApproveBtn.disabled = true;
+      jsStopBtn.disabled = false;
+      jsDownloadBtn.disabled = true;
+      jsLoadBulkBtn.disabled = true;
+      jobResults = [];
+      jsOffersEl.innerHTML = '<div class="status">Running AI on approved prompt(s)…</div>';
+      try {
+        const resp = await fetch('/api/job-search/run', {
+          method: 'POST',
+          signal: jsAbort.signal,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ searchId: jsSearchId, prompts, skip, modelIndex: activeModel })
+        });
+        if (!resp.ok || !resp.body) {
+          const d = await resp.json().catch(() => ({}));
+          alert('AI run failed: ' + (d.error || resp.status));
+        } else {
+          const reader = resp.body.getReader();
+          const dec = new TextDecoder();
+          let buf = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            const lines = buf.split('\n');
+            buf = lines.pop();
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              let ev;
+              try { ev = JSON.parse(line); } catch (_) { continue; }
+              if (ev.event === 'ai-progress') {
+                if (ev.total) jsMeta.textContent = 'AI matching batch ' + ev.done + ' / ' + ev.total + '…';
+              } else if (ev.event === 'ai-error') {
+                jsMeta.textContent = 'AI error: ' + ev.error + ' (continuing)';
+              } else if (ev.event === 'done') {
+                jobResults = (ev.offers || []).map((o) => Object.assign({ _checked: true }, o));
+                renderJobResults();
+                if (!jobResults.length) jsMeta.textContent = 'No matching offers found.';
+              }
+            }
+          }
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') alert('AI run error: ' + e.message);
+      }
+      jsAbort = null;
+      jsRunning = false;
+      jsApproveBtn.disabled = false;
+      jsStopBtn.disabled = true;
+      renderJobResults();
+    }
+
+    function downloadJobResults() {
+      const offers = jobResultsToBulk();
+      if (!offers.length) return;
+      const payload = { saved: offers.map((o) => ({
+        title: o.title, company: o.company, location: o.location, url: o.url,
+        workplaceType: o.workplaceType || '', salary: o.salary || '', savedAt: o.savedAt || '',
+        descriptionText: o.description
+      })) };
+      const d = new Date();
+      const stamp = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0') + '-' + String(d.getHours()).padStart(2, '0') + String(d.getMinutes()).padStart(2, '0');
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'gem-job-search-' + stamp + '.json';
+      document.body.appendChild(a);
+      a.click();
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    }
+
+    async function loadJobResultsIntoBulk() {
+      const offers = jobResultsToBulk();
+      if (!offers.length) return;
+      bulkParsed = offers.map((o) => Object.assign({ _checked: true }, o));
+      persistBulkOffers();
+      closeJobSearchDialog();
+      openBulkDialog();
+      await refreshBulkDuplicates();
+    }
+
+    jsSearchBtn.addEventListener('click', runJobSearch);
+    jsApproveBtn.addEventListener('click', runJobApproved);
+    jsStopBtn.addEventListener('click', () => { if (jsAbort) { jsMeta.textContent = 'Stopping…'; jsAbort.abort(); } });
+    jsDownloadBtn.addEventListener('click', downloadJobResults);
+    jsLoadBulkBtn.addEventListener('click', loadJobResultsIntoBulk);
+    document.getElementById('jobSearchBtn').addEventListener('click', openJobSearchDialog);
+    document.getElementById('jsClose').addEventListener('click', closeJobSearchDialog);
+    jobSearchOverlay.addEventListener('click', (e) => { if (e.target === jobSearchOverlay) closeJobSearchDialog(); });
 
     // ================= Backup & restore =================
     const backupOverlay = document.getElementById('backupOverlay');
