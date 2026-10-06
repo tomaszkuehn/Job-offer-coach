@@ -86,6 +86,7 @@ In the sidebar:
    - **Model** — e.g. `deepseek-v4-flash:0731` (or use **Fetch models** to pick from the live catalogue)
 2. **Expected response (prompt)** — instructions for the model on how to phrase the response.
    - **Owner name** — **required** for the ODT export: your full name (e.g. `Jan Kowalski`); the export uses it to recognize the CV heading (`# JAN KOWALSKI`) and the signature block in cover letters. Without it the export refuses to run (HTTP 422 with a hint); nothing is guessed.
+   - **Export directory for ODT files** — where the CV / cover letter documents land. Empty = default `moje_dok/odt` inside the app folder; a relative path is resolved against the app folder, an absolute path is used as-is. Use **Browse…** to pick it from a filesystem explorer (drives first, then subdirectories, parent navigation). Saving validates the directory: it is created when missing and write access is checked (an unusable path is rejected with a clear error instead of being stored).
 3. **Files (RAG)** — upload files to attach them to the current conversation.
 
 Click **Save configuration** (the button pulses red when there are unsaved changes).
@@ -152,8 +153,7 @@ on PATH).
   is open in LibreOffice), the export retries once under a timestamped
   alternative name; the UI reports which parts succeeded, which failed, and
   suggests closing the file and re-exporting.
-- Output goes to `moje_dok/odt/` ("moje dokumenty" = *my documents* — Polish
-  folder name kept for local continuity); styling comes from a bundled reference
+- Output goes to the configured export directory (sidebar field / **Browse…**; default `moje_dok/odt/` inside the app folder — "moje dokumenty" = *my documents*, Polish folder name kept for local continuity); styling comes from a bundled reference
   document (`tools/reference-segoui.odt`): Segoe UI body font with Segoe UI
   Semibold headings, 10.5 pt base size, compact paragraph spacing, table borders (pandoc emits
   borderless tables — the server patches them in), single-line horizontal
@@ -161,6 +161,10 @@ on PATH).
   (Segoe UI replaced Calibri in Sept 2026: the 2023/24 Calibri redesign ships a
   contextual `ti`/`fi` ligature that LibreOffice's PDF export renders with a
   zero-advance glyph, visually fusing letters.)
+- **Unavailable export directory**: if the configured directory cannot be
+  created or written to at export time (unplugged drive, removed folder,
+  permissions), the export fails early with a clear message naming the path
+  and suggesting to re-check it (Browse…) — no partial state is left behind.
 
 ## Project structure
 
@@ -182,7 +186,7 @@ on PATH).
 ├── moje_dok/                      # Local output ("my documents", git-ignored)
 │   └── odt/                       # Exported CV / cover letter files + per-conversation manifests
 └── data/                          # Created automatically
-    ├── config.json                # Model slots, active model, system prompt
+    ├── config.json                # Model slots, active model, system prompt, exportsDir
     ├── uploads/                   # Content-addressed RAG file pool
     ├── conversations.json         # Conversations index (ordered by last content change)
     ├── conversations/<id>/        # Saved conversations (messages + selectedFiles)
@@ -194,9 +198,11 @@ on PATH).
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/config` | Get configuration and file list |
-| POST | `/api/config` | Save configuration |
+| POST | `/api/config` | Save configuration (`exportsDir` is validated: created if missing, write access checked) |
 | POST | `/api/files` | Upload files (multipart); identical content is deduplicated and returned as `reused` |
 | DELETE | `/api/files/:name` | Delete a file (detaches it from all conversations) |
+| GET | `/api/fs/roots` | Drives / known folders for the exports-directory picker (`{ roots: [{ path, label }] }`) |
+| GET | `/api/fs/list?path=` | List subdirectories of a folder for the picker (`{ path, parent, dirs }`; 404 on missing, 400 on a file, 403 on unreadable) |
 | POST | `/api/preview` | Build the payload for preview (without sending) |
 | POST | `/api/chat` | Send messages to the model (non-streaming) |
 | POST | `/api/chat/stream` | Streaming chat: proxies upstream NDJSON, emits plain-text chunks, model name in the `X-Model` header |
@@ -209,7 +215,7 @@ on PATH).
 | POST | `/api/conversations/:id/tags` | Set conversation tags (`{ matchPct, satisfactionPct, german, status }`; `matchPct` / `satisfactionPct` 0–100 or `null` (satisfaction is auto-filled from METRYKA and backfilled at server start), `german` = `required` / `not_required` / `null`, `status` = `to_apply` / `applied` / `not_applying` / `null`) |
 | POST | `/api/conversations/:id/tags/analyze` | Suggest tags from conversation content (does not save) |
 | DELETE | `/api/conversations/:id` | Delete a conversation |
-| POST | `/api/export-package` | Extract CV + cover letters from the latest package in a conversation and convert them to ODT (`{ conversationId }`); returns `207` with a `failed` list on partial success |
+| POST | `/api/export-package` | Extract CV + cover letters from the latest package in a conversation and convert them to ODT (`{ conversationId }`); returns `207` with a `failed` list on partial success, `500` when the export directory is unavailable |
 | POST | `/api/bulk/parse` | Parse an uploaded offer file (multipart `file`; CSV export / HTML snapshots / plain text); returns `{ offers: [{ title, company, location, url, description }] }` |
 | POST | `/api/bulk/run` | Run bulk analysis (`{ offers, modelIndex }`); NDJSON progress events `start` / `offer-start` / `offer-done` / `offer-failed` / `done` |
 | POST | `/api/job-search/preview` | Fetch offers from the internet and build AI prompts — no model call; NDJSON (`source-start` / `source-done` / `source-failed` / `prefilter` / `preview`), `searchId` caches the pool 30 min |
@@ -230,7 +236,7 @@ The test suite never touches the real application data — API and UI tests spaw
 
 | Command | What it does |
 | --- | --- |
-| `npm test` | Unit tests (pure functions: `extractMetryka`, offer parsing, tag normalization, duplicate similarity, job sources/JSON-LD) + API integration tests (config/conversations/tags/rename sync, bulk parse/refresh, context size, delete cleanup, job-search preview/run offline flow) via `node --test` |
+| `npm test` | Unit tests (pure functions: `extractMetryka`, offer parsing, tag normalization, duplicate similarity, job sources/JSON-LD) + API integration tests (config/conversations/tags/rename sync, exportsDir persist, fs browser endpoints, bulk parse/refresh, context size, delete cleanup, job-search preview/run offline flow) via `node --test` |
 | `npm run test:ui` | UI tests in a **dedicated headed Edge window** driven by Playwright (`playwright-core`, `channel: msedge`, no browser download needed): title render, sandbox-only conversation list isolation, metrics overlay, text highlight flow, highlight reset on conversation switch, conversation search (incl. the in-field ✕ clear), job-search overlay with the offline sample |
 
 Regression coverage includes the bare `METRYKA` heading case (values on a separate line) that previously swallowed bulk metrics.

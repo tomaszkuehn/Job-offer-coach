@@ -117,14 +117,77 @@ app.get('/api/config', (req, res) => {
 
 app.post('/api/config', (req, res) => {
   const cfg = loadConfig();
-  const { models, activeModel, systemPrompt, selectedFiles, ownerName } = req.body;
+  const { models, activeModel, systemPrompt, selectedFiles, ownerName, exportsDir } = req.body;
   if (models !== undefined) cfg.models = models;
   if (activeModel !== undefined) cfg.activeModel = activeModel;
   if (systemPrompt !== undefined) cfg.systemPrompt = systemPrompt;
   if (selectedFiles !== undefined) cfg.selectedFiles = selectedFiles;
   if (ownerName !== undefined) cfg.ownerName = String(ownerName).trim();
+  if (exportsDir !== undefined) {
+    const v = String(exportsDir).trim();
+    if (v) {
+      const resolved = path.isAbsolute(v) ? v : path.join(__dirname, v);
+      try {
+        if (!fs.existsSync(resolved)) fs.mkdirSync(resolved, { recursive: true });
+        fs.accessSync(resolved, fs.constants.W_OK);
+      } catch (e) {
+        return res.status(400).json({ error: `Export directory not usable: ${resolved} (${e.message})` });
+      }
+    }
+    cfg.exportsDir = v;
+  }
   saveConfig(cfg);
   res.json({ ok: true });
+});
+
+// ---- Folder browser (exports directory picker) ----
+app.get('/api/fs/roots', (req, res) => {
+  const roots = [];
+  const add = (p, label) => {
+    try {
+      if (p && fs.existsSync(p)) roots.push({ path: path.resolve(p), label: label || path.resolve(p) });
+    } catch { /* unreachable drive */
+    }
+  };
+  add(process.env.SystemDrive ? process.env.SystemDrive + '\\' : 'C:\\', 'System disk');
+  if (process.env.USERPROFILE) {
+    add(process.env.USERPROFILE, 'Home');
+    add(path.join(process.env.USERPROFILE, 'Desktop'), 'Desktop');
+    add(path.join(process.env.USERPROFILE, 'Documents'), 'Documents');
+    add(process.env.USERPROFILE + '\\..\\..', null);
+  }
+  if (process.env.HOMEDRIVE && process.env.HOMEPATH) add(process.env.HOMEDRIVE + path.sep, 'Home drive');
+  // Any additional fixed/removable drives
+  for (const letter of 'DEFGHIJKLMNOPQRSTUVWXYZ') {
+    const drive = letter + ':\\';
+    try {
+      if (fs.existsSync(drive)) roots.push({ path: drive, label: drive });
+    } catch { /* skip */ }
+  }
+  const seen = new Set();
+  res.json({ roots: roots.filter((r) => (seen.has(r.path) ? false : (seen.add(r.path), true))) });
+});
+
+app.get('/api/fs/list', (req, res) => {
+  const dir = String(req.query.path || '').trim();
+  if (!dir) return res.status(400).json({ error: 'Missing path' });
+  let stat;
+  try { stat = fs.statSync(dir); } catch { return res.status(404).json({ error: 'Directory not found: ' + dir }); }
+  if (!stat.isDirectory()) return res.status(400).json({ error: 'Not a directory: ' + dir });
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) {
+    return res.status(403).json({ error: 'Cannot read directory: ' + e.message });
+  }
+  const dirs = entries
+    .filter((e) => e.isDirectory() && e.name !== '$RECYCLE.BIN' && e.name !== 'System Volume Information')
+    .map((e) => e.name)
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  const parent = path.dirname(dir);
+  res.json({
+    path: path.resolve(dir),
+    parent: path.resolve(dir) !== parent ? parent : null,
+    dirs
+  });
 });
 
 // ---- Models (fetch available models from Ollama Cloud) ----
@@ -769,6 +832,16 @@ app.delete('/api/conversations/:id', (req, res) => {
 });
 
 // ---- Application-package export (CV / Cover Letter -> ODT via pandoc) ----
+// Output directory: config.exportsDir (set in the sidebar). Empty/missing
+// value falls back to <app dir>/moje_dok/odt. A relative path is resolved
+// against the app directory; an absolute path is used as-is.
+function resolveExportsDir() {
+  const cfg = loadConfig();
+  const v = String(cfg.exportsDir || '').trim();
+  if (!v) return path.join(__dirname, 'moje_dok', 'odt');
+  return path.isAbsolute(v) ? v : path.join(__dirname, v);
+}
+
 app.post('/api/export-package', async (req, res) => {
   const { conversationId } = req.body || {};
   if (!conversationId) return res.status(400).json({ error: 'Missing conversationId' });
@@ -967,8 +1040,15 @@ app.post('/api/export-package', async (req, res) => {
     .replace(/[\\/:*?"<>|]+/g, '')
     .replace(/\s+/g, '_')
     .slice(0, 60);
-  const outDir = path.join(__dirname, 'moje_dok', 'odt');
-  fs.mkdirSync(outDir, { recursive: true });
+  const outDir = resolveExportsDir();
+  try {
+    if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+    fs.accessSync(outDir, fs.constants.W_OK);
+  } catch (e) {
+    return res.status(500).json({
+      error: `Export directory is not available: ${outDir} — check the path (or clear it for the default) in the sidebar configuration, then retry. (${e.message})`
+    });
+  }
 
   // Standalone CV (regenerated outside a package): extractDoc starts at the
   // owner's "# JAN KOWALSKI" H1, so the chatty intro before it is already
@@ -1108,7 +1188,7 @@ app.post('/api/export-package', async (req, res) => {
         exported,
         reused,
         failed,
-        outDir: 'moje_dok/odt'
+        outDir: resolveExportsDir()
       });
     }
   } catch (e) {
@@ -1120,7 +1200,7 @@ app.post('/api/export-package', async (req, res) => {
   if (!exported.length) {
     return res.status(422).json({ error: 'No CV/CoverLetter sections found in the package' });
   }
-  res.json({ ok: true, exported, reused, outDir: 'moje_dok/odt' });
+  res.json({ ok: true, exported, reused, outDir: resolveExportsDir() });
 });
 
 // ---- Bulk analysis (offer file -> parsed offers -> automated conversations) ----

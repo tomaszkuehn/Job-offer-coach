@@ -490,6 +490,10 @@
       <h2>Expected response (prompt)</h2>
       <textarea id="systemPrompt" placeholder="E.g. You are an HR expert. Prepare a professional job offer based on the description. Use a clear structure: position, responsibilities, requirements, we offer."></textarea>
       <input type="text" id="ownerName" placeholder="Your name for CV detection, e.g. Jan Kowalski (required for ODT export)" style="width:100%; margin-top:8px" autocomplete="off" />
+      <div class="upload-row" style="margin-top:8px">
+        <input type="text" id="exportsDir" placeholder="Export directory for ODT files (empty = default: moje_dok/odt in the app folder)" style="flex:1" autocomplete="off" />
+        <button class="btn secondary" id="exportsDirBrowse" style="flex-shrink:0">Browse…</button>
+      </div>
     </div>
 
     <div class="section">
@@ -762,6 +766,20 @@
     </div>
   </div>
 
+  <div class="overlay" id="dirOverlay">
+    <div class="overlay-box" style="max-width:520px">
+      <div class="overlay-head">
+        <div><h2>Choose export directory</h2><div class="meta" id="dirCurrent"></div></div>
+        <button class="btn secondary" id="dirClose">&#x2715;</button>
+      </div>
+      <div class="overlay-body" id="dirList" style="white-space:normal; min-height:220px; max-height:340px; overflow:auto"></div>
+      <div class="overlay-foot">
+        <button class="btn secondary" id="dirCancel">Cancel</button>
+        <button class="btn" id="dirSelect">Select this folder</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const chatEl = document.getElementById('chat');
     const userInput = document.getElementById('userInput');
@@ -803,7 +821,8 @@ let streamingActive = false; // a model response is being streamed
         models,
         activeModel,
         systemPrompt: document.getElementById('systemPrompt').value,
-        ownerName: document.getElementById('ownerName').value
+        ownerName: document.getElementById('ownerName').value,
+        exportsDir: document.getElementById('exportsDir').value
       });
     }
     function markDirty() {
@@ -1358,6 +1377,98 @@ let streamingActive = false; // a model response is being streamed
     renameOverlay.addEventListener('click', (e) => {
       if (e.target === renameOverlay) closeRenameDialog();
     });
+
+    // ---- Export directory browser ----
+    const dirOverlay = document.getElementById('dirOverlay');
+    const dirList = document.getElementById('dirList');
+    const dirCurrent = document.getElementById('dirCurrent');
+    let dirSelected = '';
+
+    function renderDirEntries(data) {
+      dirCurrent.textContent = data.path;
+      dirSelected = data.path;
+      dirList.innerHTML = '';
+      const mk = (label, target, cls) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn secondary' + (cls ? ' ' + cls : '');
+        b.style.cssText = 'display:block; width:100%; text-align:left; margin-bottom:4px; padding:6px 10px';
+        b.textContent = label;
+        b.addEventListener('click', () => openDir(target));
+        dirList.appendChild(b);
+      };
+      if (data.parent) mk('&#9650; parent', data.parent, 'dir-up');
+      (data.dirs || []).forEach((d) => mk('&#128193; ' + d, joinPath(data.path, d)));
+      if (!(data.dirs || []).length) {
+        const p = document.createElement('div');
+        p.style.cssText = 'color:#7b8794; font-size:12px; padding:8px 2px';
+        p.textContent = 'No subdirectories here.';
+        dirList.appendChild(p);
+      }
+    }
+
+    function joinPath(dir, name) {
+      return /[\\/]$/.test(dir) ? dir + name : dir + '\\' + name.replace(/\//g, '\\');
+    }
+
+    async function openDir(target) {
+      try {
+        const res = await fetch('/api/fs/list?path=' + encodeURIComponent(target));
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'HTTP ' + res.status);
+        renderDirEntries(data);
+      } catch (e) {
+        dirCurrent.textContent = 'Cannot open: ' + e.message;
+      }
+    }
+
+    async function openDirBrowser() {
+      dirOverlay.classList.add('show');
+      dirSelected = document.getElementById('exportsDir').value.trim();
+      dirCurrent.textContent = 'Loading…';
+      dirList.innerHTML = '';
+      try {
+        const res = await fetch('/api/fs/roots');
+        const data = await res.json();
+        const roots = data.roots || [];
+        if (!roots.length) throw new Error('no accessible drives');
+        dirList.innerHTML = '';
+        dirCurrent.textContent = 'Choose a drive or navigate to a folder';
+        roots.forEach((r) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'btn secondary';
+          b.style.cssText = 'display:block; width:100%; text-align:left; margin-bottom:4px; padding:6px 10px';
+          b.textContent = '&#128188; ' + r.label;
+          b.innerHTML = '&#128188; ' + r.label;
+          b.addEventListener('click', () => openDir(r.path));
+          dirList.appendChild(b);
+        });
+        if (dirSelected) openDir(dirSelected);
+      } catch (e) {
+        dirCurrent.textContent = 'Cannot list drives: ' + e.message;
+      }
+    }
+
+    function closeDirBrowser() {
+      dirOverlay.classList.remove('show');
+      dirSelected = '';
+    }
+
+    document.getElementById('exportsDirBrowse').addEventListener('click', openDirBrowser);
+    document.getElementById('dirClose').addEventListener('click', closeDirBrowser);
+    document.getElementById('dirCancel').addEventListener('click', closeDirBrowser);
+    document.getElementById('dirSelect').addEventListener('click', () => {
+      if (dirSelected) document.getElementById('exportsDir').value = dirSelected;
+      document.getElementById('exportsDir').dispatchEvent(new Event('input', { bubbles: true }));
+      closeDirBrowser();
+    });
+    dirOverlay.addEventListener('click', (e) => {
+      if (e.target === dirOverlay) closeDirBrowser();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && dirOverlay.classList.contains('show')) closeDirBrowser();
+    });
     document.getElementById('tagClose').addEventListener('click', closeTagEditor);
     document.getElementById('tagSuggest').addEventListener('click', async () => {
       if (!tagEditingId) return;
@@ -1739,6 +1850,7 @@ let streamingActive = false; // a model response is being streamed
       activeModel = (cfg.activeModel !== undefined && cfg.activeModel < models.length) ? cfg.activeModel : 0;
       document.getElementById('systemPrompt').value = cfg.systemPrompt || '';
       document.getElementById('ownerName').value = cfg.ownerName || '';
+      document.getElementById('exportsDir').value = cfg.exportsDir || '';
       // selectedFiles is per-conversation state — loadConfig no longer resets it
       allFiles = cfg.files || [];
       // Uniform RAG: on startup (fresh page load, no conversation restored
@@ -1758,7 +1870,8 @@ let streamingActive = false; // a model response is being streamed
         models,
         activeModel,
         systemPrompt: document.getElementById('systemPrompt').value,
-        ownerName: document.getElementById('ownerName').value.trim()
+        ownerName: document.getElementById('ownerName').value.trim(),
+        exportsDir: document.getElementById('exportsDir').value.trim()
       };
       try {
         const res = await fetch('/api/config', {
@@ -1854,13 +1967,15 @@ let streamingActive = false; // a model response is being streamed
           const fresh = data.exported.filter((f) => !reused.includes(f));
           if (fresh.length && reused.length) {
             status.textContent = 'Exported: ' + fresh.join(', ').replaceAll('_', ' ')
-              + ' · unchanged, already exported: ' + reused.join(', ').replaceAll('_', ' ');
+              + ' · unchanged, already exported: ' + reused.join(', ').replaceAll('_', ' ')
+              + ' → ' + (data.outDir || '');
           } else if (reused.length && !fresh.length) {
             status.style.color = '#4b5563';
             status.textContent = 'Identical files already exist — nothing new exported: '
-              + reused.join(', ').replaceAll('_', ' ');
+              + reused.join(', ').replaceAll('_', ' ') + ' → ' + (data.outDir || '');
           } else {
-            status.textContent = 'Exported: ' + data.exported.join(', ').replaceAll('_', ' ');
+            status.textContent = 'Exported: ' + data.exported.join(', ').replaceAll('_', ' ')
+              + ' → ' + (data.outDir || '');
           }
           clearLater(15000);
         } else if (res.ok && data.failed) {
@@ -1876,8 +1991,15 @@ let streamingActive = false; // a model response is being streamed
           clearLater(12000);
         } else {
           status.style.color = '#a12b2b';
-          status.textContent = data.error || 'Export failed';
-          clearLater(6000);
+          if (res.status === 500 && /not available/i.test(data.error || '')) {
+            status.innerHTML = '<b>Export failed — export directory is not available.</b><br>'
+              + String(data.error).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
+              + '<br><br>Tip: check the path with <b>Browse…</b> next to the export directory field and save the configuration again.';
+            clearLater(15000);
+          } else {
+            status.textContent = data.error || 'Export failed';
+            clearLater(6000);
+          }
         }
       } catch (e) {
         status.style.color = '#a12b2b';

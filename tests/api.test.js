@@ -148,6 +148,41 @@ test('POST /api/bulk/parse accepts CSV and flags nothing in empty sandbox copy',
   assert.strictEqual(data.offers[0].company, 'FreshCo');
 });
 
+test('POST /api/config persists exportsDir and GET returns it', async () => {
+  const dir = path.join(SANDBOX, 'custom-exports');
+  const post = await fetch(BASE + '/api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ exportsDir: dir })
+  });
+  assert.strictEqual(post.status, 200);
+  const cfg = await (await fetch(BASE + '/api/config')).json();
+  assert.strictEqual(cfg.exportsDir, dir);
+  assert.ok(fs.existsSync(dir), 'configured export directory is created on save');
+  const postRel = await fetch(BASE + '/api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ exportsDir: 'rel-exports' })
+  });
+  assert.strictEqual(postRel.status, 200);
+  const cfg2 = await (await fetch(BASE + '/api/config')).json();
+  assert.strictEqual(cfg2.exportsDir, 'rel-exports');
+});
+
+test('GET /api/fs/roots and /api/fs/list browse the filesystem', async () => {
+  const r = await fetch(BASE + '/api/fs/roots');
+  const { roots } = await r.json();
+  assert.ok(Array.isArray(roots) && roots.length >= 1, 'at least one root');
+  assert.ok(roots.every((x) => path.isAbsolute(x.path)), 'roots are absolute');
+  const r2 = await fetch(BASE + '/api/fs/list?path=' + encodeURIComponent(roots[0].path));
+  const data = await r2.json();
+  assert.strictEqual(r2.status, 200);
+  assert.ok(Array.isArray(data.dirs), 'dirs array');
+  assert.ok(!data.dirs.some((d) => d === '$RECYCLE.BIN' || d === 'System Volume Information'), 'system entries hidden');
+  const bad = await fetch(BASE + '/api/fs/list?path=' + encodeURIComponent(path.join(SANDBOX, 'nope-nodir')));
+  assert.strictEqual(bad.status, 404);
+  const fileAsDir = await fetch(BASE + '/api/fs/list?path=' + encodeURIComponent(path.join(SANDBOX, 'config.json')));
+  assert.strictEqual(fileAsDir.status, 400);
+});
+
 test('POST /api/context-size computes chars/tokens', async () => {
   const r = await fetch(BASE + '/api/context-size', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
