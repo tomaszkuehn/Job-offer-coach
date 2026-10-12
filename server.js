@@ -542,8 +542,9 @@ app.get('/api/conversations', (req, res) => {
   res.json(loadConversationsIndex());
 });
 
-// Search conversations by title or message content. Returns index entries
-// extended with a match type and a short snippet for body matches.
+// Search conversations by title or first user prompt only. Assistant replies
+// (generated application documents) are deliberately excluded, so a phrase
+// from a CV or cover letter does not match every conversation.
 app.get('/api/conversations/search', (req, res) => {
   const q = String(req.query.q || '').trim();
   if (!q) return res.json([]);
@@ -560,18 +561,14 @@ app.get('/api/conversations/search', (req, res) => {
       continue;
     }
 
-    // Body match: first message containing the query (assistant first — the
-    // useful documents usually live there)
-    let snippet = null;
-    for (let i = conv.messages.length - 1; i >= 0; i--) {
-      const m = conv.messages[i];
-      const idx = String(m.content || '').toLowerCase().indexOf(ql);
-      if (idx === -1) continue;
-      const from = Math.max(0, idx - 60);
-      snippet = (from > 0 ? '…' : '') + m.content.slice(from, idx + q.length + 60).replace(/\s+/g, ' ') + '…';
-      break;
-    }
-    if (snippet) results.push({ ...entry, matchType: 'body', snippet });
+    // First-prompt match: first user message only
+    const firstUser = (conv.messages || []).find((m) => m.role === 'user');
+    if (!firstUser) continue;
+    const idx = String(firstUser.content || '').toLowerCase().indexOf(ql);
+    if (idx === -1) continue;
+    const from = Math.max(0, idx - 60);
+    const snippet = (from > 0 ? '…' : '') + firstUser.content.slice(from, idx + q.length + 60).replace(/\s+/g, ' ') + '…';
+    results.push({ ...entry, matchType: 'body', snippet });
   }
   res.json(results);
 });

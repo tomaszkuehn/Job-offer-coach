@@ -9,6 +9,8 @@ $gemDir = 'D:\kody\GEM'
 if (-not (Test-Path (Join-Path $gemDir 'server.js'))) { $gemDir = $PSScriptRoot }
 $gemUrl = 'http://localhost:3000'
 $script:running = $true
+$script:wantRunning = $true
+$script:failCount = 0
 $script:trayLog = Join-Path $env:TEMP 'GEM-tray.log'
 
 function Write-TrayLog([string]$msg) {
@@ -89,6 +91,18 @@ function Stop-Gem {
   if ($c) { Stop-Process -Id $c[0].OwningProcess -Force -ErrorAction SilentlyContinue }
 }
 
+function Open-Gem {
+  if ($script:wantRunning -and -not (Test-GemRunning)) {
+    if (Start-Gem) {
+      $script:running = $true
+      $script:failCount = 0
+      $script:notify.Icon = $script:iconOn
+      $script:notify.Text = 'GEM - running'
+    }
+  }
+  Start-Process $script:gemUrl
+}
+
 function New-GemIcon([System.Drawing.Color]$color) {
   $bmp = New-Object System.Drawing.Bitmap 32, 32
   $g = [System.Drawing.Graphics]::FromImage($bmp)
@@ -114,10 +128,12 @@ $notify.Visible = $true
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 
 $openItem = $menu.Items.Add('Open GEM')
-$openItem.add_Click({ Start-Process $script:gemUrl })
+$openItem.add_Click({ Open-Gem })
 
 $restartItem = $menu.Items.Add('Start / Restart server')
 $restartItem.add_Click({
+  $script:wantRunning = $true
+  $script:failCount = 0
   if (Start-Gem) { $script:running = $true; $script:notify.Icon = $script:iconOn; $script:notify.Text = 'GEM - running' }
   else {
     $script:running = $false; $script:notify.Icon = $script:iconOff; $script:notify.Text = 'GEM - stopped'
@@ -128,6 +144,7 @@ $restartItem.add_Click({
 $stopItem = $menu.Items.Add('Stop server')
 $stopItem.add_Click({
   Stop-Gem
+  $script:wantRunning = $false
   $script:running = $false
   $script:notify.Icon = $script:iconOff
   $script:notify.Text = 'GEM - stopped'
@@ -144,17 +161,41 @@ $exitItem.add_Click({
 
 $notify.ContextMenuStrip = $menu
 $notify.add_Click({
-  if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Start-Process $script:gemUrl }
+  if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Open-Gem }
 })
 
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 5000
 $timer.add_Tick({
   $up = Test-GemRunning
-  if ($up -ne $script:running) {
-    $script:running = $up
-    if ($up) { $script:notify.Icon = $script:iconOn; $script:notify.Text = 'GEM - running' }
-    else { $script:notify.Icon = $script:iconOff; $script:notify.Text = 'GEM - stopped' }
+  if ($up) {
+    $script:failCount = 0
+    if (-not $script:running) {
+      $script:running = $true
+      $script:notify.Icon = $script:iconOn
+      $script:notify.Text = 'GEM - running'
+    }
+  } else {
+    if ($script:running) {
+      $script:running = $false
+      $script:notify.Icon = $script:iconOff
+      $script:notify.Text = 'GEM - stopped'
+    }
+    if ($script:wantRunning -and $script:failCount -lt 3) {
+      if (Start-Gem) {
+        $script:running = $true
+        $script:failCount = 0
+        $script:notify.Icon = $script:iconOn
+        $script:notify.Text = 'GEM - running'
+        $script:notify.ShowBalloonTip(5000, 'GEM', 'Server was down - restarted automatically', [System.Windows.Forms.ToolTipIcon]::Info)
+      } else {
+        $script:failCount++
+        if ($script:failCount -ge 3) {
+          $script:wantRunning = $false
+          $script:notify.ShowBalloonTip(5000, 'GEM', 'Could not restart server - right-click the icon and use Start / Restart server (details in %TEMP%\GEM-tray.log)', [System.Windows.Forms.ToolTipIcon]::Error)
+        }
+      }
+    }
   }
 })
 $timer.Start()

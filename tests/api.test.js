@@ -97,6 +97,18 @@ test('GET /api/conversations/:id returns messages and tags', async () => {
   assert.strictEqual(conv.tags.matchPct, 60);
 });
 
+test('GET /api/conversations/search covers title + first prompt, not assistant replies', async () => {
+  const titleHit = await (await fetch(BASE + '/api/conversations/search?q=' + encodeURIComponent('ACME - Dev'))).json();
+  assert.strictEqual(titleHit.length, 1);
+  assert.strictEqual(titleHit[0].matchType, 'title');
+  const promptHit = await (await fetch(BASE + '/api/conversations/search?q=' + encodeURIComponent('quantum engineer'))).json();
+  assert.strictEqual(promptHit.length, 1);
+  assert.strictEqual(promptHit[0].matchType, 'body');
+  assert.ok(promptHit[0].snippet && promptHit[0].snippet.toLowerCase().includes('quantum'));
+  const assistantOnly = await (await fetch(BASE + '/api/conversations/search?q=' + encodeURIComponent('ANALIZA'))).json();
+  assert.strictEqual(assistantOnly.length, 0, 'assistant-only phrase must not match');
+});
+
 test('POST /api/conversations/:id/rename syncs metrics convName', async () => {
   const r = await fetch(BASE + '/api/conversations/testconv000001/rename', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

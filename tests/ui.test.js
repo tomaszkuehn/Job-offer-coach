@@ -167,13 +167,25 @@ test('highlights disappear after switching conversations', async () => {
 });
 
 test('conversation search filters the sidebar list', async () => {
-  // Search matches titles AND bodies, so use a string unique to the title
-  // of the first conversation ("ACME - Dev").
+  // Search covers titles and first user prompts only: use a string unique
+  // to the title of the first conversation ("ACME - Dev").
   await page.fill('#convSearch', 'ACME - Dev');
   await pause(900); // debounced server search
   let list = await page.textContent('#convList');
   assert.match(list, /ACME - Dev/);
   assert.doesNotMatch(list, /Other - Chat/, 'non-matching conversation should disappear from the list');
+  // A phrase that only exists in an assistant reply (generated document)
+  // must NOT match — assistant replies are excluded from search.
+  await page.fill('#convSearch', 'OTHER-DISTINGUISHING');
+  await pause(900);
+  list = await page.textContent('#convList');
+  assert.match(list, /No conversations|No saved|match/i, 'assistant-only phrase must not match any conversation');
+  // A phrase from the first user prompt matches both fixture conversations.
+  await page.fill('#convSearch', 'Embedded Engineer');
+  await pause(900);
+  list = await page.textContent('#convList');
+  assert.match(list, /ACME - Dev/);
+  assert.match(list, /Other - Chat/, 'first-prompt phrase matches both conversations');
   // A nonsense query shows the empty state.
   await page.fill('#convSearch', 'ZZZ-NO-SUCH-OFFER');
   await pause(900);

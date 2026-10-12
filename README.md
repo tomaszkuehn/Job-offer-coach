@@ -45,7 +45,15 @@ The RAG list in the UI shows **only the files attached to the current conversati
 - Node.js 18+ (uses the global `fetch`)
 - [pandoc](https://pandoc.dev) on PATH — only for the ODT export feature
 
-## Installation and running
+## Running the app
+
+No commands needed for daily use:
+
+1. The app **starts automatically at Windows logon** — look for the **GEM tray icon** next to the clock.
+2. **Left-click the tray icon** (or right-click → **Open GEM**, or double-click the **Job Offer Coach** desktop shortcut) — the app opens in your browser at http://localhost:3000. If the server happens to be down, opening it starts the server first.
+3. **Green icon = running, red = stopped.** If the server crashes, the tray **restarts it automatically** and shows a notification. After 3 failed restart attempts it stays stopped: right-click the icon → **Start / Restart server** (details in `%TEMP%\GEM-tray.log`). **Stop server** switches the auto-restart off until the next manual start.
+
+### Developer run (from source)
 
 ```bash
 npm install
@@ -68,13 +76,7 @@ This produces `dist\GEM-Setup-<version>.zip` (app files + installer, no `node_mo
 powershell -ExecutionPolicy Bypass -File tools\install.ps1 [-InstallDir <path>] [-NoStartup] [-NoStart]
 ```
 
-Default install dir is `%LOCALAPPDATA%\GEM`. The installer detects Node.js (same nvm-aware logic as the tray; offers `winget` install of Node LTS if missing), runs `npm ci --omit=dev`, writes an `uninstall.ps1` (stops server + tray, removes the startup shortcut and install dir), creates the logon autostart shortcut and starts the tray. `data/` is never touched on reinstall/upgrade.
-
-### Auto-start with tray icon
-
-`tray-app.ps1` runs at Windows logon (hidden window, shortcut in `shell:startup\GEM Tray.lnk`). The tray icon shows the server state — green = running, red = stopped (checked every 5 s). Left-click opens the app; right-click menu: **Open GEM / Start – Restart server / Stop server / Exit tray**. If the server is not running at logon, the script starts it. A mutex (`GEMTrayLauncher`) prevents duplicate tray instances.
-
-The tray locates `node.exe` via `PATH`, standard install locations, and nvm setups (`NVM_SYMLINK`, `NVM_HOME`, `%APPDATA%\nvm`, `%LOCALAPPDATA%\Author Software\nvm`, plus a recursive scan of nvm version dirs as a last resort). Diagnostics are logged to `%TEMP%\GEM-tray.log`.
+Default install dir is `%LOCALAPPDATA%\GEM`. The installer detects Node.js (same nvm-aware logic as the tray; offers `winget` install of Node LTS if missing), runs `npm ci --omit=dev`, writes an `uninstall.ps1` (stops server + tray, removes the startup shortcut and install dir), creates the logon autostart shortcut (`shell:startup\GEM Tray.lnk`, hidden window, single instance via a mutex) and starts the tray. `data/` is never touched on reinstall/upgrade. Diagnostics are logged to `%TEMP%\GEM-tray.log`.
 
 ## Configuration
 
@@ -104,7 +106,9 @@ Click **Save configuration** (the button pulses red when there are unsaved chang
 - **+ New conversation** — asks for a name for the conversation being closed, but **only when it still carries the default `Conversation` name** (already-renamed conversations keep their name untouched and the new one starts immediately). The new one starts with the default `Conversation` name (the creation date/time shown on the list is generated separately), keeping the RAG selection and model.
 - Clicking a name in the list **restores** the conversation together with its RAG files. The browsed conversation stays in place on the list and is highlighted in green.
 - The list is **scrollable** (fixed height) and has a **search box**: matching
-  covers conversation **titles** and **message contents** — body matches show
+  covers conversation **titles** and the **first user prompt** only — assistant
+  replies (generated CVs / cover letters) are excluded, so a phrase from a
+  document does not match every conversation. Prompt matches show
   a snippet under the name. **Esc** clears the search; a subtle **✕ inside
   the field** (same style as the model-slot remove buttons) appears while a
   query is set and click-restores the unfiltered list.
@@ -208,7 +212,7 @@ on PATH).
 | POST | `/api/chat/stream` | Streaming chat: proxies upstream NDJSON, emits plain-text chunks, model name in the `X-Model` header |
 | POST | `/api/context-size` | Estimate context size (chars + tokens) for the current selection |
 | GET | `/api/conversations` | List conversations |
-| GET | `/api/conversations/search?q=` | Search conversations by title or message content (returns index entries with `matchType` and `snippet` for body matches) |
+| GET | `/api/conversations/search?q=` | Search conversations by title or first user prompt (returns index entries with `matchType` and `snippet` for prompt matches; assistant replies are not searched) |
 | GET | `/api/conversations/:id` | Get a conversation (read-only; does not touch global config) |
 | POST | `/api/conversations` | Create or update a conversation (`id` optional); bumps `updatedAt` only when content changes |
 | POST | `/api/conversations/:id/rename` | Rename a conversation |

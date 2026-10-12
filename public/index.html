@@ -1557,7 +1557,7 @@ let streamingActive = false; // a model response is being streamed
       loadConversations(convSearchEl.value);
     });
 
-    // Conversation search: debounced server search across titles and bodies
+    // Conversation search: debounced server search across titles and first user prompts
     const convSearchClear = document.getElementById('convSearchClear');
     function syncConvSearchClear() {
       convSearchClear.style.display = convSearchEl.value ? '' : 'none';
