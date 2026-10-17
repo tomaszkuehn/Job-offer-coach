@@ -2,6 +2,9 @@
 
 A web application for preparing job offers with the help of an AI model in the cloud (Ollama Cloud). Runs in the browser; the backend is Node.js + Express.
 
+<img width="1334" height="856" alt="job-offer" src="https://github.com/user-attachments/assets/d81f5365-9139-4a17-92d5-70e5ad56a560" />
+
+
 ## License
 
 Attribution-Required **Non-Commercial No-Derivatives** (`AN-NC-ND`, custom, CC BY-NC-ND-inspired — see `LICENSE`):
