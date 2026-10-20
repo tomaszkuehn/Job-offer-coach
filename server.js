@@ -15,6 +15,19 @@ const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const CONVERSATIONS_DIR = path.join(DATA_DIR, 'conversations');
 const CONVERSATIONS_INDEX = path.join(DATA_DIR, 'conversations.json');
+const CRASH_LOG = path.join(DATA_DIR, 'crash.log');
+
+function logCrash(context, err) {
+  const line = `[${new Date().toISOString()}] ${context}: ${(err && err.stack) || err}\n`;
+  try { fs.appendFileSync(CRASH_LOG, line); } catch (_) { /* ignore */ }
+  console.error(line.trim());
+}
+
+// Keep the server alive on unhandled promise rejections (Node >=15 exits by
+// default). Without this a single escaping async error looked like a random
+// "server restarted" from the tray watchdog while a bulk run was in flight.
+process.on('unhandledRejection', (reason) => logCrash('unhandledRejection', reason));
+process.on('uncaughtException', (err) => { logCrash('uncaughtException', err); process.exit(1); });
 
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 fs.mkdirSync(CONVERSATIONS_DIR, { recursive: true });
@@ -465,34 +478,48 @@ function offerNgrams(text, n) {
   for (let i = 0; i + n <= toks.length; i++) set.add(toks.slice(i, i + n).join(' '));
   return set;
 }
-function offerContainment(a, b, n) {
-  const ga = offerNgrams(a, n), gb = offerNgrams(b, n);
+// Set-vs-set containment (n-gram sets already built). Building the grams of the
+// stored conversations for EVERY offer made a bulk refresh O(offers x stored x
+// text length) and blocked the event loop for seconds (the tray watchdog then
+// restarted the server mid-run). Callers now build each side once.
+function offerContainmentSets(ga, gb) {
   if (!ga.size || !gb.size) return 0;
   const [small, big] = ga.size <= gb.size ? [ga, gb] : [gb, ga];
   let inter = 0;
   for (const g of small) if (big.has(g)) inter++;
   return inter / small.size;
 }
+function offerContainment(a, b, n) {
+  return offerContainmentSets(offerNgrams(a, n), offerNgrams(b, n));
+}
+// Snapshot of every stored conversation's first user message with its token
+// and 5-gram sets precomputed ONCE per request.
+function buildStoredOfferIndex() {
+  const stored = [];
+  for (const entry of loadConversationsIndex()) {
+    const conv = loadConversation(entry.id);
+    if (!conv || !conv.messages || !conv.messages.length) continue;
+    const firstUser = conv.messages.find((m) => m.role === 'user');
+    if (!firstUser) continue;
+    const content = String(firstUser.content || '');
+    stored.push({ id: entry.id, name: entry.name, tokens: offerTokens(content), grams5: offerNgrams(content, 5) });
+  }
+  return stored;
+}
 // The "offer" is the last user message of the request (what is being
 // submitted now). Compared with the first user message of every stored
 // conversation. Matches >= 70% are reported.
 // Flag parsed bulk offers that are already analyzed in stored conversations.
 function flagStoredOffers(offers) {
-  const stored = [];
-  for (const entry of loadConversationsIndex()) {
-    const conv = loadConversation(entry.id);
-    if (!conv || !conv.messages || !conv.messages.length) continue;
-    const firstUser = conv.messages.find((m) => m.role === "user");
-    if (!firstUser) continue;
-    stored.push({ id: entry.id, name: entry.name, tokens: offerTokens(firstUser.content), content: firstUser.content });
-  }
+  const stored = buildStoredOfferIndex();
   for (const o of offers) {
     o.duplicate = null;
     const text = [o.title, o.company, o.description].filter(Boolean).join("\n");
     const cur = offerTokens(text);
     if (cur.size < 15) continue;
+    const curGrams = offerNgrams(text, 5);
     for (const st of stored) {
-      const sim = Math.max(offerSimilarity(cur, st.tokens), offerContainment(text, st.content, 5));
+      const sim = Math.max(offerSimilarity(cur, st.tokens), offerContainmentSets(curGrams, st.grams5));
       if (sim >= 0.7) {
         o.duplicate = { id: st.id, name: st.name, similarity: Math.round(sim * 100) };
         break;
@@ -505,19 +532,12 @@ function flagStoredOffers(offers) {
 function findDuplicateOffers(currentMsg, currentConvId) {
   const cur = offerTokens(currentMsg);
   if (cur.size < 15) return []; // too short to judge reliably
+  const curGrams = offerNgrams(currentMsg, 5);
   const hits = [];
-  for (const entry of loadConversationsIndex()) {
-    if (currentConvId && entry.id === currentConvId) continue;
-    const conv = loadConversation(entry.id);
-    if (!conv || !conv.messages || !conv.messages.length) continue;
-    const firstUser = conv.messages.find((m) => m.role === 'user');
-    if (!firstUser) continue;
-    const stored = firstUser.content;
-    const sim = Math.max(
-      offerSimilarity(cur, offerTokens(stored)),
-      offerContainment(currentMsg, stored, 5)
-    );
-    if (sim >= 0.7) hits.push({ id: entry.id, name: entry.name, similarity: Math.round(sim * 100) });
+  for (const st of buildStoredOfferIndex()) {
+    if (currentConvId && st.id === currentConvId) continue;
+    const sim = Math.max(offerSimilarity(cur, st.tokens), offerContainmentSets(curGrams, st.grams5));
+    if (sim >= 0.7) hits.push({ id: st.id, name: st.name, similarity: Math.round(sim * 100) });
   }
   return hits.sort((a, b) => b.similarity - a.similarity).slice(0, 5);
 }
@@ -2384,15 +2404,24 @@ app.post("/api/bulk/run", async (req, res) => {
   res.flushHeaders();
   const send = (obj) => { try { res.write(JSON.stringify(obj) + "\n"); } catch (_) {} };
   send({ event: "start", total: offers.length, ragFiles: ragFiles.length });
-  for (const offer of offers) {
-    if (stopRequested) break;
-    send({ event: "offer-start", title: offer.title || "", company: offer.company || "" });
-    const r = await runBulkOffer(offer, ragFiles, modelIndex);
-    if (r.ok) send({ event: "offer-done", convId: r.convId, name: r.name, metrics: r.metrics });
-    else send({ event: "offer-failed", error: r.error, title: offer.title || "", company: offer.company || "" });
+  try {
+    for (const offer of offers) {
+      if (stopRequested) break;
+      send({ event: "offer-start", title: offer.title || "", company: offer.company || "" });
+      const r = await runBulkOffer(offer, ragFiles, modelIndex);
+      if (r.ok) send({ event: "offer-done", convId: r.convId, name: r.name, metrics: r.metrics });
+      else send({ event: "offer-failed", error: r.error, title: offer.title || "", company: offer.company || "" });
+    }
+    send({ event: "done", stopped: stopRequested });
+  } catch (e) {
+    // Express 4 does not catch rejected async handlers: an error escaping the
+    // loop used to become an unhandled rejection (process exit) and the tray
+    // restarted the server mid-run. Report it in the stream instead.
+    logCrash("bulk/run loop", e);
+    send({ event: "offer-failed", error: "Internal error: " + e.message });
+    send({ event: "done", stopped: stopRequested, error: e.message });
   }
-  send({ event: "done", stopped: stopRequested });
-  res.end();
+  try { res.end(); } catch (_) { /* client already gone */ }
 });
 
 // Re-flag parsed offers against ALL stored conversations. The bulk dialog

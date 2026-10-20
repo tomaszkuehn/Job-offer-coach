@@ -11,6 +11,7 @@ $gemUrl = 'http://localhost:3000'
 $script:running = $true
 $script:wantRunning = $true
 $script:failCount = 0
+$script:restartAttempts = 0
 $script:trayLog = Join-Path $env:TEMP 'GEM-tray.log'
 
 function Write-TrayLog([string]$msg) {
@@ -56,18 +57,22 @@ if (-not $created) { exit }
 
 function Test-GemRunning {
   try {
-    $r = Invoke-WebRequest -Uri $gemUrl -UseBasicParsing -TimeoutSec 2
+    # Generous timeout: a busy server (long bulk run) must not be mistaken for
+    # a dead one. Restarts are additionally gated on 3 consecutive failures.
+    $r = Invoke-WebRequest -Uri $gemUrl -UseBasicParsing -TimeoutSec 8
     return ($r.StatusCode -eq 200)
   } catch { return $false }
 }
 
 function Start-Gem {
+  if (Test-GemRunning) { Write-TrayLog 'Start-Gem: server already responds - not restarting'; return $true }
   if (-not $script:nodeExe) {
     Write-TrayLog 'Start-Gem: node.exe not found (not in PATH nor in standard install locations)'
     return $false
   }
   $c = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
   if ($c) {
+    Write-TrayLog ('Start-Gem: killing unresponsive process ' + $c[0].OwningProcess + ' on port 3000')
     Stop-Process -Id $c[0].OwningProcess -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 800
   }
@@ -134,6 +139,7 @@ $restartItem = $menu.Items.Add('Start / Restart server')
 $restartItem.add_Click({
   $script:wantRunning = $true
   $script:failCount = 0
+  $script:restartAttempts = 0
   if (Start-Gem) { $script:running = $true; $script:notify.Icon = $script:iconOn; $script:notify.Text = 'GEM - running' }
   else {
     $script:running = $false; $script:notify.Icon = $script:iconOff; $script:notify.Text = 'GEM - stopped'
@@ -169,32 +175,41 @@ $timer.Interval = 5000
 $timer.add_Tick({
   $up = Test-GemRunning
   if ($up) {
+    if ($script:failCount -gt 0) {
+      Write-TrayLog ('health restored after ' + $script:failCount + ' failed check(s) - no restart performed')
+    }
     $script:failCount = 0
+    $script:restartAttempts = 0
     if (-not $script:running) {
       $script:running = $true
       $script:notify.Icon = $script:iconOn
       $script:notify.Text = 'GEM - running'
     }
+    return
+  }
+  if ($script:running) {
+    $script:running = $false
+    $script:notify.Icon = $script:iconOff
+    $script:notify.Text = 'GEM - stopped'
+  }
+  $script:failCount++
+  Write-TrayLog ('health check failed (' + $script:failCount + '/3)')
+  if (-not $script:wantRunning) { return }
+  # A slow check is not a crash: require 3 consecutive failures (~15 s) before
+  # touching the process. A bulk run keeps the server busy for minutes.
+  if ($script:failCount -lt 3) { return }
+  if (Start-Gem) {
+    $script:running = $true
+    $script:failCount = 0
+    $script:restartAttempts = 0
+    $script:notify.Icon = $script:iconOn
+    $script:notify.Text = 'GEM - running'
+    $script:notify.ShowBalloonTip(5000, 'GEM', 'Server was down - restarted automatically', [System.Windows.Forms.ToolTipIcon]::Info)
   } else {
-    if ($script:running) {
-      $script:running = $false
-      $script:notify.Icon = $script:iconOff
-      $script:notify.Text = 'GEM - stopped'
-    }
-    if ($script:wantRunning -and $script:failCount -lt 3) {
-      if (Start-Gem) {
-        $script:running = $true
-        $script:failCount = 0
-        $script:notify.Icon = $script:iconOn
-        $script:notify.Text = 'GEM - running'
-        $script:notify.ShowBalloonTip(5000, 'GEM', 'Server was down - restarted automatically', [System.Windows.Forms.ToolTipIcon]::Info)
-      } else {
-        $script:failCount++
-        if ($script:failCount -ge 3) {
-          $script:wantRunning = $false
-          $script:notify.ShowBalloonTip(5000, 'GEM', 'Could not restart server - right-click the icon and use Start / Restart server (details in %TEMP%\GEM-tray.log)', [System.Windows.Forms.ToolTipIcon]::Error)
-        }
-      }
+    $script:restartAttempts++
+    if ($script:restartAttempts -ge 3) {
+      $script:wantRunning = $false
+      $script:notify.ShowBalloonTip(5000, 'GEM', 'Could not restart server - right-click the icon and use Start / Restart server (details in %TEMP%\GEM-tray.log)', [System.Windows.Forms.ToolTipIcon]::Error)
     }
   }
 })
