@@ -1319,6 +1319,22 @@ let streamingActive = false; // a model response is being streamed
         }
         convListEl.appendChild(item);
       });
+      revealActiveConversation();
+    }
+    // Keep the selected conversation inside the visible part of the list
+    // (e.g. after picking an entry in the metrics window, which can be far
+    // down the list).
+    function revealActiveConversation() {
+      const active = convListEl.querySelector('.file-item.active');
+      if (!active) return;
+      const pad = 4;
+      const listR = convListEl.getBoundingClientRect();
+      const itemR = active.getBoundingClientRect();
+      if (itemR.top < listR.top + pad) {
+        convListEl.scrollTop -= (listR.top + pad - itemR.top);
+      } else if (itemR.bottom > listR.bottom - pad) {
+        convListEl.scrollTop += (itemR.bottom - (listR.bottom - pad));
+      }
     }
 
     // ---- Tag editor ----
@@ -1754,8 +1770,16 @@ let streamingActive = false; // a model response is being streamed
       renderChat();
       renderFiles();
       scheduleCtxUpdate();
-      // Re-render the list so the green highlight follows the browsed conversation
+      // Re-render the list so the green highlight follows the browsed conversation.
+      // If the active entry is hidden by the search box or status chips, clear
+      // them so the conversation is actually visible in the list.
       await loadConversations();
+      if (!convListEl.querySelector('.file-item.active')) {
+        convSearchEl.value = '';
+        syncConvSearchClear();
+        resetConvFilters();
+        await loadConversations('');
+      }
       await loadConfig();
       if (currentConvModelIndex !== null && currentConvModelIndex < models.length) {
         activeModel = currentConvModelIndex;
