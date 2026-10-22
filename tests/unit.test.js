@@ -292,3 +292,65 @@ test('JOB_SOURCES: XING, Stepstone, NoFluffJobs, pracuj are wired as html source
     assert.ok(src.linkRe && src.listing, id + ' has linkRe + listing');
   }
 });
+
+// ---- job search: UAE / Gulf portals ----
+test('JOB_SOURCES: gulfhire and linkedin are wired with custom fetchers', () => {
+  for (const id of ['gulfhire', 'linkedin']) {
+    const src = s.JOB_SOURCES.find((x) => x.id === id);
+    assert.ok(src, id + ' source present');
+    assert.strictEqual(typeof src.fetchOffers, 'function', id + ' has a custom fetcher');
+  }
+});
+
+test('jobGulfCity / jobGulfCities: UAE cities in the free-text location', () => {
+  assert.strictEqual(s.jobGulfCity('Dubai, Abu Dhabi, UAE').cc, 'AE');
+  assert.strictEqual(s.jobGulfCity('Hamburg'), null);
+  const all = s.jobGulfCities('Dubai, Abu Dhabi, Sharjah, UAE').map((c) => c.city);
+  assert.deepStrictEqual(all, ['Abu Dhabi', 'Dubai', 'Sharjah']);
+  assert.strictEqual(s.jobCityCountry('Dubai'), 'AE');
+  assert.strictEqual(s.jobCityCountry('Doha'), 'QA');
+});
+
+test('jobShortDate: "13 Oct" becomes an ISO date', () => {
+  assert.match(s.jobShortDate('13 Oct'), /^\d{4}-10-13$/);
+  assert.strictEqual(s.jobShortDate('No closing date'), 'No closing date');
+});
+
+test('jobLinkedinLocation: maps a Gulf city to "City, Country"', () => {
+  assert.strictEqual(s.jobLinkedinLocation('Dubai'), 'Dubai, United Arab Emirates');
+  assert.strictEqual(s.jobLinkedinLocation('UAE'), 'United Arab Emirates');
+  assert.strictEqual(s.jobLinkedinLocation('Hamburg'), 'Hamburg');
+});
+
+test('parseGulfhireListing: card -> offer (title, company, city/country, summary, date)', () => {
+  const html = '<article class="jr"><div class="jr-main"><h2 class="jr-title"><a class="jr-link" href="/jobs/its-atms-software-engineer-dubai-qe2nk0"><span lang="en">ITS ATMS Software Engineer</span></a></h2>' +
+    '<p class="jr-meta"><span class="jr-fact jr-company"><svg></svg><bdi>Parsons</bdi></span><span class="jr-fact"><svg></svg><span>Dubai</span></span></p>' +
+    '<p class="jr-summary" lang="en">Parsons is hiring an ITS ATMS Software Engineer in Dubai to support the Resident Engineer in delivering software components for an Advanced Traffic Management System.</p>' +
+    '</div><div class="jr-facts"><span class="jr-posted"><svg></svg><span class="num">13 Oct</span></span></div></article>';
+  const offers = s.parseGulfhireListing(html, 'https://gulfhire.com');
+  assert.strictEqual(offers.length, 1);
+  assert.strictEqual(offers[0].title, 'ITS ATMS Software Engineer');
+  assert.strictEqual(offers[0].company, 'Parsons');
+  assert.strictEqual(offers[0].location, 'Dubai, United Arab Emirates');
+  assert.strictEqual(offers[0].source, 'gulfhire');
+  assert.strictEqual(offers[0].url, 'https://gulfhire.com/jobs/its-atms-software-engineer-dubai-qe2nk0');
+  assert.match(offers[0].savedAt, /^\d{4}-10-13$/);
+  assert.match(offers[0].description, /Advanced Traffic Management System/);
+});
+
+test('parseLinkedinGuestCards: guest search card -> offer', () => {
+  const html = '<li><div class="base-card base-search-card job-search-card" data-entity-urn="urn:li:jobPosting:4362132219">' +
+    '<a class="base-card__full-link" href="https://ae.linkedin.com/jobs/view/senior-software-engineer-backend-at-talabat-4362132219?position=1&amp;pageNum=0"><span class="sr-only">Senior Software Engineer- Backend</span></a>' +
+    '<div class="base-search-card__info"><h3 class="base-search-card__title">Senior Software Engineer- Backend</h3>' +
+    '<h4 class="base-search-card__subtitle"><a href="https://ae.linkedin.com/company/talabat-com">talabat</a></h4>' +
+    '<div class="base-search-card__metadata"><span class="job-search-card__location">Dubai, Dubai, United Arab Emirates</span></div>' +
+    '<time class="job-search-card__listdate" datetime="2026-10-13">1 week ago</time></div></div></li>';
+  const jobs = s.parseLinkedinGuestCards(html);
+  assert.strictEqual(jobs.length, 1);
+  assert.strictEqual(jobs[0].title, 'Senior Software Engineer- Backend');
+  assert.strictEqual(jobs[0].company, 'talabat');
+  assert.strictEqual(jobs[0].location, 'Dubai, Dubai, United Arab Emirates');
+  assert.strictEqual(jobs[0].id, '4362132219');
+  assert.strictEqual(jobs[0].savedAt, '2026-10-13');
+  assert.ok(!jobs[0].url.includes('?'), 'tracking query stripped');
+});

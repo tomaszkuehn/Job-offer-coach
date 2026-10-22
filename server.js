@@ -1637,6 +1637,233 @@ async function jobFetchHtmlSource(src, criteria, ctx) {
   return offers;
 }
 
+// ---- Gulf / UAE portals ----
+// GulfHire aggregates openings from employers' own careers sites across the
+// Gulf (UAE, Qatar, Saudi, Kuwait, Bahrain, Oman). Its listing pages are
+// server-rendered, so no API key and no headless browser are needed.
+// LinkedIn's public (guest) search endpoint also works without a login and
+// covers Dubai/Abu Dhabi well; the detail fragment carries the description.
+const JOB_CITY_COUNTRY = [
+  ['abu dhabi', 'Abu Dhabi', 'AE'], ['dubai', 'Dubai', 'AE'], ['sharjah', 'Sharjah', 'AE'],
+  ['al ain', 'Al Ain', 'AE'], ['ajman', 'Ajman', 'AE'], ['ras al khaimah', 'Ras Al Khaimah', 'AE'],
+  ['fujairah', 'Fujairah', 'AE'], ['umm al quwain', 'Umm Al Quwain', 'AE'],
+  ['doha', 'Doha', 'QA'], ['riyadh', 'Riyadh', 'SA'], ['jeddah', 'Jeddah', 'SA'],
+  ['khobar', 'Khobar', 'SA'], ['kuwait city', 'Kuwait City', 'KW'],
+  ['manama', 'Manama', 'BH'], ['muscat', 'Muscat', 'OM']
+];
+const JOB_COUNTRY_NAMES = {
+  AE: 'United Arab Emirates', QA: 'Qatar', SA: 'Saudi Arabia',
+  KW: 'Kuwait', BH: 'Bahrain', OM: 'Oman'
+};
+// First Gulf city mentioned in the free-text location field.
+function jobGulfCity(location) {
+  const t = String(location || '').toLowerCase();
+  for (const [pat, city, cc] of JOB_CITY_COUNTRY) if (t.includes(pat)) return { city, cc };
+  return null;
+}
+// Every Gulf city mentioned in the location field (Dubai + Abu Dhabi + ...).
+function jobGulfCities(location) {
+  const t = String(location || '').toLowerCase();
+  const out = [];
+  for (const [pat, city, cc] of JOB_CITY_COUNTRY) {
+    if (t.includes(pat) && !out.some((c) => c.city === city)) out.push({ city, cc });
+  }
+  return out;
+}
+function jobCityCountry(city) {
+  const t = String(city || '').toLowerCase();
+  for (const [pat, , cc] of JOB_CITY_COUNTRY) if (t.includes(pat)) return cc;
+  if (/uae|emirat/i.test(t)) return 'AE';
+  return '';
+}
+function jobCityLabel(city, cc) {
+  const c = String(city || '').trim();
+  const country = JOB_COUNTRY_NAMES[cc] || '';
+  return c && country ? c + ', ' + country : (c || country);
+}
+// "13 Oct" -> "2026-10-13" (current year); anything else is kept as-is.
+function jobShortDate(raw) {
+  const t = String(raw || '').trim();
+  const m = t.match(/^(\d{1,2})\s+([A-Za-z]{3})/);
+  if (!m) return t;
+  const months = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+  const mo = months[m[2].toLowerCase()];
+  if (!mo) return t;
+  return new Date().getFullYear() + '-' + String(mo).padStart(2, '0') + '-' + String(m[1]).padStart(2, '0');
+}
+
+// GulfHire listing cards: title, company, city, summary, posted date.
+function parseGulfhireListing(html, base) {
+  const out = [];
+  const cards = String(html || '').split('<article class="jr"').slice(1);
+  for (const card of cards) {
+    const m = card.match(/<h2 class="jr-title">[\s\S]*?<a class="jr-link" href="([^"]+)"[\s\S]*?>([\s\S]*?)<\/a>/);
+    if (!m) continue;
+    const title = offerClean(decodeEntities(m[2].replace(/<[^>]+>/g, ' ')), 160);
+    if (!title) continue;
+    const url = m[1].startsWith('http') ? m[1] : base + m[1];
+    const cm = card.match(/jr-company[\s\S]{0,600}?<bdi[^>]*>([^<]*)<\/bdi>/);
+    const company = cm ? offerClean(decodeEntities(cm[1]), 120) : '';
+    const lm = card.match(/<span class="jr-fact">[\s\S]{0,700}?<span>([^<]+)<\/span>/);
+    const city = lm ? offerClean(lm[1], 60) : '';
+    const sm = card.match(/<p class="jr-summary"[^>]*>([\s\S]*?)<\/p>/);
+    const summary = sm ? offerClean(decodeEntities(sm[1].replace(/<[^>]+>/g, ' ')), 1500) : '';
+    const pm = card.match(/jr-posted[\s\S]{0,600}?<span class="num">([^<]+)<\/span>/);
+    const cc = jobCityCountry(city);
+    const remote = /remote/i.test(city);
+    out.push({
+      source: 'gulfhire', title, company,
+      location: jobCityLabel(city, cc) || 'Gulf',
+      workplace: remote ? 'remote' : 'onsite',
+      url, applyUrl: url, salary: '',
+      savedAt: jobShortDate(pm ? pm[1] : ''),
+      description: summary
+    });
+  }
+  return out;
+}
+
+// LinkedIn public search cards (guest endpoint): title, company, location,
+// posting date, job id.
+function parseLinkedinGuestCards(html) {
+  const out = [];
+  const blocks = String(html || '').split(/<li\b/).slice(1);
+  for (const b of blocks) {
+    if (!/base-search-card/.test(b)) continue;
+    const tm = b.match(/base-search-card__title[^>]*>\s*([^<]{2,200})/);
+    const title = tm ? offerClean(decodeEntities(tm[1]), 160) : '';
+    if (!title) continue;
+    const cm = b.match(/base-search-card__subtitle[^>]*>([\s\S]*?)<\/h4>/);
+    const company = cm ? offerClean(decodeEntities(cm[1].replace(/<[^>]+>/g, ' ')), 120) : '';
+    const lm = b.match(/job-search-card__location[^>]*>\s*([^<]{2,160})/);
+    const location = lm ? offerClean(lm[1], 160) : '';
+    const dm = b.match(/job-search-card__listdate[^>]*datetime="([^"]+)"/);
+    const um = b.match(/href="(https:\/\/[a-z.]*linkedin\.com\/jobs\/view\/[^"]+)"/);
+    const im = b.match(/urn:li:jobPosting:(\d+)/);
+    if (!im && !um) continue;
+    const url = um ? decodeEntities(um[1]).split('?')[0] : ('https://www.linkedin.com/jobs/view/' + (im ? im[1] : ''));
+    out.push({
+      id: im ? im[1] : '', title, company, location, url,
+      savedAt: dm ? dm[1] : '', description: ''
+    });
+  }
+  return out;
+}
+
+// LinkedIn expects one place name; map a Gulf city to "<City>, <Country>".
+function jobLinkedinLocation(location) {
+  const raw = String(location || '').trim();
+  if (!raw) return '';
+  const gulf = jobGulfCity(raw);
+  if (gulf) return gulf.city + ', ' + (JOB_COUNTRY_NAMES[gulf.cc] || '');
+  if (/uae|emirat/i.test(raw)) return 'United Arab Emirates';
+  return raw;
+}
+
+async function fetchGulfhireOffers(src, criteria, ctx) {
+  const words = (criteria.keywords || '').split(/\s+/).filter(Boolean);
+  // GulfHire's search handles at most two terms - a three-word query returns
+  // nothing, so the narrow query is tried first and the single word is the
+  // fallback.
+  const queries = [];
+  if (words.length) {
+    queries.push(words.slice(0, 2).join(' '));
+    queries.push(words[0]);
+  } else {
+    queries.push('software');
+  }
+  // One listing per mentioned Gulf city (Dubai, Abu Dhabi, Sharjah, ...).
+  const cities = jobGulfCities(criteria.location).slice(0, 3);
+  const places = cities.length ? cities.map((c) => c.city) : [''];
+  const offers = [];
+  const seen = new Set();
+  for (const q of queries) {
+    let got = 0;
+    for (const city of places) {
+      const url = 'https://gulfhire.com/jobs?q=' + encodeURIComponent(q) +
+        (city ? '&where=' + encodeURIComponent(city) : '');
+      let html = '';
+      try { html = await ctx.getText(url); } catch (_) { continue; }
+      const parsed = parseGulfhireListing(html, 'https://gulfhire.com');
+      got += parsed.length;
+      for (const o of parsed) {
+        const key = (o.title + '|' + o.company + '|' + o.location).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        offers.push(o);
+      }
+    }
+    if (got) break;   // the narrowest query that returns anything wins
+  }
+  const limit = Math.min(offers.length, src.maxDetails || 12);
+  for (let i = 0; i < limit; i++) {
+    if (i > 0 && ctx.delay > 0) await new Promise((r) => setTimeout(r, ctx.delay));
+    try {
+      const detail = await ctx.getText(offers[i].url);
+      const jp = parseJsonLdJobPostings(detail)[0];
+      if (!jp) continue;
+      const n = normalizeJsonLdOffer(jp, src.id, offers[i].url);
+      if (!n) continue;
+      offers[i].description = n.description;
+      if (n.company) offers[i].company = n.company;
+      if (n.location) offers[i].location = n.location.replace(/,\s*AE\b/, ', United Arab Emirates');
+      if (n.savedAt) offers[i].savedAt = n.savedAt;
+      if (n.salary) offers[i].salary = n.salary;
+    } catch (_) { /* one bad detail must not kill the source */ }
+  }
+  return offers.filter((o) => o.description && o.description.length >= 100);
+}
+
+async function fetchLinkedinOffers(src, criteria, ctx) {
+  const kw = (criteria.keywords || '').split(/\s+/).filter(Boolean).slice(0, 3).join(' ') || 'software';
+  // One query per mentioned place (Dubai, Abu Dhabi, ...) plus the raw text.
+  const places = jobGulfCities(criteria.location).slice(0, 3).map((c) => c.city + ', ' + (JOB_COUNTRY_NAMES[c.cc] || ''));
+  if (!places.length) {
+    const raw = String(criteria.location || '').trim();
+    places.push(jobLinkedinLocation(raw));
+  }
+  const jobs = [];
+  const seen = new Set();
+  // The guest endpoint returns 10 cards per page - read two pages per place.
+  for (const place of places) {
+    if (!place) continue;
+    for (const start of [0, 25]) {
+      const url = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=' +
+        encodeURIComponent(kw) + '&location=' + encodeURIComponent(place) + '&start=' + start;
+      let html = '';
+      try { html = await ctx.getText(url); } catch (_) { continue; }
+      for (const j of parseLinkedinGuestCards(html)) {
+        if (seen.has(j.id || j.url)) continue;
+        seen.add(j.id || j.url);
+        jobs.push(j);
+      }
+    }
+  }
+  const out = [];
+  const limit = Math.min(jobs.length, src.maxDetails || 12);
+  for (let i = 0; i < limit; i++) {
+    const j = jobs[i];
+    if (i > 0 && ctx.delay > 0) await new Promise((r) => setTimeout(r, ctx.delay));
+    let description = '';
+    if (j.id) {
+      try {
+        const detail = await ctx.getText('https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/' + j.id);
+        const dm = detail.match(/show-more-less-html__markup[\s\S]*?>([\s\S]*?)<\/section>/i);
+        if (dm) description = offerHtmlToText(dm[1]);
+        if (description.length < 100) description = offerHtmlToText(detail).slice(0, 4000);
+      } catch (_) { /* ignore a missing detail */ }
+    }
+    if (description.length < 100) continue;
+    out.push({
+      source: src.id, title: j.title, company: j.company,
+      location: j.location || 'United Arab Emirates',
+      workplace: /remote/i.test(j.location) ? 'remote' : 'onsite',
+      url: j.url, applyUrl: j.url, salary: '', savedAt: j.savedAt, description
+    });
+  }
+  return out;
+}
+
 const JOB_SOURCES = [
   {
     id: 'arbeitnow', parseAs: 'json', normalize: normalizeArbeitnow,
@@ -1694,6 +1921,16 @@ const JOB_SOURCES = [
     id: 'pracuj', kind: 'html', base: 'https://it.pracuj.pl', slow: 2000, maxDetails: 10,
     linkRe: '/praca/[a-z0-9][a-z0-9-]*,[a-z0-9]+;kw',
     listing: (criteria, kw) => 'https://it.pracuj.pl/praca/' + encodeURIComponent((kw || 'software').replace(/\s+/g, '-')) + ';kw'
+  },
+  {
+    // GulfHire (UAE/Qatar/Saudi/Kuwait/Bahrain/Oman): server-rendered listing
+    // + JSON-LD detail pages. No API key, no headless browser.
+    id: 'gulfhire', fetchOffers: fetchGulfhireOffers, slow: 800, maxDetails: 12
+  },
+  {
+    // LinkedIn public (guest) search - works for Dubai/Abu Dhabi and any other
+    // location; the detail fragment carries the full description.
+    id: 'linkedin', fetchOffers: fetchLinkedinOffers, slow: 1200, maxDetails: 12
   },
   {
     id: 'sample', parseAs: 'json', normalize: normalizeJobSample,
@@ -1862,6 +2099,10 @@ async function jobGetText(url) {
 }
 
 async function jobFetchSource(src, criteria, ctx) {
+  // Custom fetchers (GulfHire / LinkedIn) bring their own parser.
+  if (typeof src.fetchOffers === 'function') {
+    return src.fetchOffers(src, criteria, ctx || { getText: (u) => jobGetText(u), delay: (src.slow || JOB_HOST_DELAY_MS) });
+  }
   // HTML portals (XING / Stepstone / NoFluffJobs): scrape listing + details.
   if (src.kind === 'html') {
     return jobFetchHtmlSource(src, criteria, ctx || { getText: (u) => jobGetText(u), delay: (src.slow || JOB_HOST_DELAY_MS) });
@@ -2684,6 +2925,13 @@ if (require.main !== module) {
     normalizeJsonLdOffer,
     jsonLdSalary,
     jsonLdLocation,
+    parseGulfhireListing,
+    parseLinkedinGuestCards,
+    jobGulfCity,
+    jobGulfCities,
+    jobCityCountry,
+    jobShortDate,
+    jobLinkedinLocation,
     jobPrefilter,
     jobAiPrompt,
     parseJobAiReply,

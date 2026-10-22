@@ -27,7 +27,7 @@ Attribution-Required **Non-Commercial No-Derivatives** (`AN-NC-ND`, custom, CC B
 - **Metrics view** — a "Metrics" button lists all saved metrics sorted by the *Recommend* score (best first); each row shows company, position, application status (to apply / applied / not applying), all six METRYKA percentages and the date; clicking a row opens the conversation the metric came from. The status cell is a shortcut tag editor: clicking it cycles `to apply` → `not applying` → clear (and saves via the tags endpoint, so the conversation tags and the `metrics.json` entry stay in sync). Manual chats also get metrics automatically: when a saved conversation's **fresh** reply contains a METRYKA block, it is extracted on save — tags (I/S %) are updated and a `metrics.json` entry is upserted (re-analysis replaces the old values; manual tag edits during ordinary browsing are never overwritten). Company/position for manual chats are inferred from the first user message (`title`, `Employers: …` or `title / company / location / url` layout).
 - **Backup & restore** — a "Backup & restore" button downloads a ZIP of the whole `data/` directory (config incl. API keys, conversations, RAG files, metrics); restoring from a ZIP (with confirmation) wipes and replaces the current data.
 - **Live context-size indicator** — a badge next to the model switcher shows the estimated context size in tokens (green / yellow / red thresholds) so cost and limit pressure are visible before sending.
-- **Job search (internet)** — a "Job search (internet)" button opens an overlay that fetches **real offers** from public job APIs and portals, pre-filters them locally against your criteria (keywords, location alternatives like `Hamburg, Poznan, remote`, language, workplace chips remote/onsite/hybrid, selectable sources), then lets **your configured AI model** do the final ranking/matching (the AI never invents offers — ids are cross-checked against the fetched pool). Two-step flow: **Search** fetches and builds the prompt (no model call), the prompt is shown **per batch for review/editing** (Alt+↑/↓, skip batch), then **Approve & run AI**. Results can be **Download**ed as a bulk-import JSON (`gem-job-search-YYYYMMDD-HHMM.json`) or **loaded straight into Bulk analysis**. Sources fetched + parsed server-side (scraped portals read the listing page, then each offer's detail page `schema.org JobPosting` JSON-LD, throttled ~1.2–2 s per request): arbeitnow, remotive, jobicy, remoteok, weworkremotely RSS, themuse, **XING** (DACH), **Stepstone** (DE), **NoFluffJobs** (PL); **pracuj.pl** is wired but currently **blocked by Cloudflare** (needs a real browser) and reports that error instead of silently returning nothing. An offline **sample** source (8 built-in offers) makes the whole flow demo-able and testable with no network.
+- **Job search (internet)** — a "Job search (internet)" button opens an overlay that fetches **real offers** from public job APIs and portals, pre-filters them locally against your criteria (keywords, location alternatives like `Hamburg, Poznan, remote`, language, workplace chips remote/onsite/hybrid, selectable sources), then lets **your configured AI model** do the final ranking/matching (the AI never invents offers — ids are cross-checked against the fetched pool). Two-step flow: **Search** fetches and builds the prompt (no model call), the prompt is shown **per batch for review/editing** (Alt+↑/↓, skip batch), then **Approve & run AI**. Results can be **Download**ed as a bulk-import JSON (`gem-job-search-YYYYMMDD-HHMM.json`) or **loaded straight into Bulk analysis**. Sources fetched + parsed server-side (scraped portals read the listing page, then each offer's detail page `schema.org JobPosting` JSON-LD, throttled ~1.2–2 s per request): arbeitnow, remotive, jobicy, remoteok, weworkremotely RSS, themuse, **XING** (DACH), **Stepstone** (DE), **NoFluffJobs** (PL), **GulfHire** (UAE/Qatar/Saudi/Kuwait/Bahrain/Oman — listing cards + JSON-LD details), **LinkedIn public search** (guest endpoint; covers Dubai/Abu Dhabi and any other location, description from the job detail fragment); **pracuj.pl** is wired but currently **blocked by Cloudflare** (needs a real browser) and reports that error instead of silently returning nothing. An offline **sample** source (8 built-in offers) makes the whole flow demo-able and testable with no network. A dedicated **UAE preset** (one click) is described under [Searching for jobs in the UAE](#searching-for-jobs-in-the-uae).
 
 ## Content-addressed RAG files
 
@@ -136,6 +136,28 @@ Click **Save configuration** (the button pulses red when there are unsaved chang
 - The **preview overlay** is keyboard-driven: **Enter** sends, **Esc** cancels.
 - **Duplicate-offer warning** — when the submitted message resembles the first message of an already-analyzed conversation (≥ 70 % similarity), the preview shows a warning listing those conversations with their match percentages. The send itself is never blocked. Similarity takes the **max** of whole-text token overlap (Jaccard) and **5-word-sequence containment**, so offers with a different header/intro (same body from another source) are still caught.
 
+### Searching for jobs in the UAE
+
+The job-search overlay has a **UAE (Dubai, Abu Dhabi)** button next to the *Location* field. One click:
+
+- fills the location with `Dubai, Abu Dhabi, UAE`,
+- switches the source chips to **gulfhire (UAE/Gulf)** + **linkedin (UAE/any)**,
+- remembers the choice (the overlay stores the criteria in `localStorage`).
+
+Both sources are keyless and need no browser on the server side:
+
+- **GulfHire** — aggregates openings from employers' own careers sites across the Gulf (UAE, Qatar, Saudi Arabia, Kuwait, Bahrain, Oman). The listing page is server-rendered, so title, company, city, summary and posting date are parsed straight from the cards; the top results are enriched with the full description from the offer's `schema.org JobPosting` JSON-LD.
+- **LinkedIn (public search)** — the guest search endpoint works without a login; each hit is enriched with the description from the job detail fragment.
+
+Every Gulf city named in the location field is queried **separately** and the results are merged, so `Dubai, Abu Dhabi, UAE` returns jobs from both cities. Recognised places: Dubai, Abu Dhabi, Sharjah, Al Ain, Ajman, Ras Al Khaimah, Fujairah, Umm Al Quwain (all `AE`), Doha (`QA`), Riyadh / Jeddah / Khobar (`SA`), Kuwait City (`KW`), Manama (`BH`), Muscat (`OM`). A city that is not on the list is ignored by the Gulf sources and passed through verbatim to LinkedIn.
+
+Limitations worth knowing:
+
+- GulfHire's search accepts **at most two terms** — a three-word query returns nothing, so the server falls back to the first word automatically.
+- GulfHire's search covers at most ~2 terms *and* one city per request, which is why a full run takes ~15–30 s.
+- **Bayt.com** and **GulfTalent** are not wired: both answer with `403` to a plain server-side request (Cloudflare) and would need a headless browser.
+- The two new sources never bypass the normal pipeline: pre-filtering by keywords/location/workplace, the AI matching step and the bulk-import format stay exactly the same.
+
 ### Exporting CV & Cover Letters (ODT)
 
 When the model produces an application package (CV + cover letter sections),
@@ -243,7 +265,7 @@ The test suite never touches the real application data — API and UI tests spaw
 
 | Command | What it does |
 | --- | --- |
-| `npm test` | Unit tests (pure functions: `extractMetryka`, offer parsing, tag normalization, duplicate similarity, job sources/JSON-LD) + API integration tests (config/conversations/tags/rename sync, exportsDir persist, fs browser endpoints, bulk parse/refresh, context size, delete cleanup, job-search preview/run offline flow) via `node --test` |
+| `npm test` | Unit tests (pure functions: `extractMetryka`, offer parsing, tag normalization, duplicate similarity, job sources/JSON-LD, UAE source parsers: GulfHire cards, LinkedIn guest cards, Gulf city/date mapping) + API integration tests (config/conversations/tags/rename sync, exportsDir persist, fs browser endpoints, bulk parse/refresh, context size, delete cleanup, job-search preview/run offline flow) via `node --test` |
 | `npm run test:ui` | UI tests in a **dedicated headed Edge window** driven by Playwright (`playwright-core`, `channel: msedge`, no browser download needed): title render, sandbox-only conversation list isolation, metrics overlay, text highlight flow, highlight reset on conversation switch, conversation search (incl. the in-field ✕ clear), job-search overlay with the offline sample |
 
 Regression coverage includes the bare `METRYKA` heading case (values on a separate line) that previously swallowed bulk metrics.
@@ -251,5 +273,6 @@ Regression coverage includes the bare `METRYKA` heading case (values on a separa
 ## Notes
 
 - RAG files are attached as plain text to the prompt (no embeddings/vectors) — the right trade-off when the corpus is a handful of personal documents.
+- Job-search portals are scraped server-side, so their markup can change at any time — a source that stops returning offers is reported in the progress line (`source failed: …`) and the run continues with the other sources.
 - The API key is stored locally in `data/config.json` — do not share this file. Keys are never rendered in plain text in the UI (password fields) and are not needed by any third party; the frontend fetches the config (incl. the key for the config panel) and the model calls are proxied through the backend. All requests stay on the local machine (`server.js` listens on `127.0.0.1`).
 - The app runs locally; it is not intended for public deployment without security measures.

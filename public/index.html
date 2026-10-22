@@ -609,6 +609,7 @@
           <div style="flex:1">
             <label style="font-size:11px; color:#6b7280">Location</label>
             <input type="text" id="jsLocation" placeholder="e.g. Hamburg, Poznan, Europe" style="width:100%" autocomplete="off" />
+            <button class="filter-chip" id="jsUaePreset" style="margin-top:4px" title="Ustawia lokalizację UAE (Dubai, Abu Dhabi) i przełącza źródła na te dla ZEA">UAE (Dubai, Abu Dhabi)</button>
           </div>
           <div style="flex:1">
             <label style="font-size:11px; color:#6b7280">Desired job / keywords</label>
@@ -642,6 +643,8 @@
           <button class="filter-chip" data-js-src="stepstone" title="Stepstone (DE) — scraped listing + JSON-LD, ~25s">stepstone (DE)</button>
           <button class="filter-chip" data-js-src="nofluffjobs" title="NoFluffJobs (PL/remote) — scraped listing + JSON-LD, ~15s">nofluffjobs (PL)</button>
           <button class="filter-chip" data-js-src="pracuj" title="pracuj.pl (PL) — currently blocked by Cloudflare from the server; usually fails">pracuj.pl (PL)</button>
+          <button class="filter-chip" data-js-src="gulfhire" title="GulfHire (UAE/Qatar/Saudi/Kuwait/Bahrain/Oman) — server-rendered listing + JSON-LD, ~20s">gulfhire (UAE/Gulf)</button>
+          <button class="filter-chip" data-js-src="linkedin" title="LinkedIn public search — works for Dubai/Abu Dhabi and any other location, ~25s">linkedin (UAE/any)</button>
           <button class="filter-chip" data-js-src="sample" title="Built-in offline sample — no network, for demo/testing">sample (offline)</button>
         </div>
         <div id="jsPromptWrap" style="display:none; margin-top:12px">
@@ -2632,6 +2635,18 @@ let streamingActive = false; // a model response is being streamed
     document.querySelectorAll('#jsBody [data-js-wp], #jsBody [data-js-src]').forEach((btn) => {
       btn.addEventListener('click', () => { btn.classList.toggle('active'); jobPersistCriteria(); });
     });
+
+    // UAE preset: location + the two portals that cover the Emirates.
+    const jsUaePreset = document.getElementById('jsUaePreset');
+    if (jsUaePreset) {
+      jsUaePreset.addEventListener('click', () => {
+        document.getElementById('jsLocation').value = 'Dubai, Abu Dhabi, UAE';
+        document.querySelectorAll('#jsBody [data-js-src]').forEach((b) => {
+          b.classList.toggle('active', ['gulfhire', 'linkedin'].includes(b.getAttribute('data-js-src')));
+        });
+        jobPersistCriteria();
+      });
+    }
 
     function openJobSearchDialog() {
       jobSearchOverlay.classList.add('show');
