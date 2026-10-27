@@ -859,53 +859,42 @@ function resolveExportsDir() {
   return path.isAbsolute(v) ? v : path.join(__dirname, v);
 }
 
-app.post('/api/export-package', async (req, res) => {
-  const { conversationId } = req.body || {};
-  if (!conversationId) return res.status(400).json({ error: 'Missing conversationId' });
-
-  const conv = loadConversation(conversationId);
-  if (!conv) return res.status(404).json({ error: 'Conversation not found' });
-
-  // A conversation may hold several CV versions over time (full packages,
-  // updates, standalone CV regenerations). For each part (CV / CL_EN / CL_DE)
-  // export from the LATEST assistant message that contains it.
-  const assistants = conv.messages.filter((m) => m.role === 'assistant');
-
-  // Document extraction is MARKER-based, not level-based: documents inside a
-  // chat message are delimited by their own headings (CV, Cover Letter, ...)
-  // and the next analysis section, regardless of heading level. Level-based
-  // parsing broke in three observed ways: emoji-prefixed headings
-  // ("### 📄 CV — ...") did not match, inner H3s (job entries inside an H3
-  // "### CV") truncated the body, and H1-delimited documents ("# COVER
-  // LETTER") swallowed the assistant's trailing commentary.
-  function listHeadings(md) {
-    const out = [];
-    const re = /^(#{1,6})\s+([^\n]*)/gm;
-    let m;
-    while ((m = re.exec(md)) !== null) {
-      // Normalize: drop emoji/symbols/quotes so "📄 CV" and "CV" are equal
-      const norm = m[2].replace(/^[^\p{L}\p{N}]+/u, '').trim();
-      out.push({ level: m[1].length, raw: m[2].trim(), norm, index: m.index, end: m.index + m[0].length });
-    }
-    return out;
+// ---- Package document extraction (CV / Cover Letter) ----
+// Pure helpers shared by POST /api/export-package and tools/extract-package.js.
+//
+// Document extraction is MARKER-based, not level-based: documents inside a
+// chat message are delimited by their own headings (CV, Cover Letter, ...)
+// and the next analysis section, regardless of heading level. Level-based
+// parsing broke in three observed ways: emoji-prefixed headings
+// ("### 📄 CV — ...") did not match, inner H3s (job entries inside an H3
+// "### CV") truncated the body, and H1-delimited documents ("# COVER
+// LETTER") swallowed the assistant's trailing commentary.
+function packageListHeadings(md) {
+  const out = [];
+  const re = /^(#{1,6})\s+([^\n]*)/gm;
+  let m;
+  while ((m = re.exec(md)) !== null) {
+    // Normalize: drop emoji/symbols/quotes so "📄 CV" and "CV" are equal
+    const norm = m[2].replace(/^[^\p{L}\p{N}]+/u, '').trim();
+    out.push({ level: m[1].length, raw: m[2].trim(), norm, index: m.index, end: m.index + m[0].length });
   }
+  return out;
+}
 
+// Extract ONE message's package parts: { cv, clEn, clDe }.
+// null = this part was not found in the message (or was rejected as an
+// implausible fragment, see the gate below); '' = the document heading
+// exists but the body is empty (reported, never silently skipped).
+function extractPackageMessage(content, ownerName) {
+  const ownerLast = ownerName.split(/\s+/).pop();
+  // The CV H1 is the owner's name line ("# JAN KOWALSKI").
+  const RE_CV_H1 = new RegExp('^(?:' + ownerName.split(/\s+/).join('\\s+') + '|' + ownerLast + ')\\b', 'i');
   const RE_CV_NUM = /^4a[\s.:-]/i;
   const RE_CV_WORD = /^CV\b/i;
-  // The CV H1 is the owner's name line ("# JAN KOWALSKI"). The name MUST be
-  // configured (config.ownerName, the sidebar "Owner name" field) — without
-  // it the export refuses to run instead of guessing a hardcoded name.
-  const ownerName = String((loadConfig().ownerName) || '').trim();
-  if (!ownerName) {
-    return res.status(422).json({ error: 'Owner name not configured — set "Owner name (for CV detection)" in the sidebar configuration and save it' });
-  }
-  const ownerLast = ownerName.split(/\s+/).pop();
-  const RE_CV_H1 = new RegExp('^(?:' + ownerName.split(/\s+/).join('\\s+') + '|' + ownerLast + ')\\b', 'i');
   // "## 4. CV (...)" — numbered package section carrying the CV
   const RE_CV_SECTION = /^\d+\s*[.)][^\n]*\bCV\b/i;
   const RE_CL = /^(?:4b[\s.:-]|4c[\s.:-]|Cover\s*Letter|Anschreiben|Bewerbungsschreiben)/i;
   const RE_NUM_SECTION = /^\d+\s*[.)]/;
-
   const isCvStart = (h) => RE_CV_NUM.test(h.norm) || RE_CV_WORD.test(h.norm)
     || (h.level <= 3 && RE_CV_SECTION.test(h.norm))
     || (h.level === 1 && RE_CV_H1.test(h.norm));
@@ -941,7 +930,7 @@ app.post('/api/export-package', async (req, res) => {
   // owner's H1 name line) — used when the CV section heading carries an
   // editorial preamble that must not end up in the exported document.
   function extractDoc(md, start, stops, refine) {
-    const heads = listHeadings(md);
+    const heads = packageListHeadings(md);
     const fromIdx = heads.findIndex(start);
     if (fromIdx === -1) return null;
     let stopIdx = heads.length;
@@ -994,39 +983,6 @@ app.post('/api/export-package', async (req, res) => {
       .replace(new RegExp('^[ \\t]*\\*\\*(' + escOwner + ')\\s*\\*\\*[ \\t]*$', 'gim'), '# **$1**');
   }
 
-  const prepMd = (m) => normalizeDocMarkers(unwrapCodeFence(m.content || ''));
-
-  const msgHasCv = (m) => extractCv(prepMd(m)) !== null;
-  const msgHasCl = (m, wantDe) => extractCl(prepMd(m), wantDe) !== null;
-
-  const latest = (pred) => [...assistants].reverse().find(pred);
-
-  // Every part is taken from the LATEST assistant message containing it, so
-  // the newest version always wins.
-  const cvMsg = latest(msgHasCv);
-  const clEnMsg = latest((m) => msgHasCl(m, false));
-  const clDeMsg = latest((m) => msgHasCl(m, true));
-  if (!cvMsg && !clEnMsg && !clDeMsg) {
-    return res.status(422).json({
-      error: 'No application package (CV + Cover Letter) found in this conversation'
-    });
-  }
-
-  // Title from the newest message that has one
-  const escOwnerLast = ownerLast.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const titleMsg = [cvMsg, clEnMsg, clDeMsg].filter(Boolean)
-    .find((m) => /^#\s+(?:Pakiet|PAKIET|AKTUALIZACJA)/im.test(m.content) || new RegExp('^#\\s+.*' + escOwnerLast, 'im').test(m.content));
-  const title = ((titleMsg || cvMsg || { content: '' }).content.match(/^#\s+(?:Pakiet|PAKIET|AKTUALIZACJA|Zaktualizowany|Zaktualizowana)[^\n]*/im)
-    || (titleMsg || cvMsg || { content: '' }).content.match(new RegExp('^#\\s+.*' + escOwnerLast + '[^\\n]*', 'im'))
-    || ['Application package'])[0].replace(/^#\s+/i, '');
-
-  const pandoc = await new Promise((resolve) => {
-    execFile('pandoc', ['--version'], (err) => resolve(!err));
-  });
-  if (!pandoc) {
-    return res.status(500).json({ error: 'pandoc not found on this system' });
-  }
-
   // Cover letters end with a signature block (sign-off line + name, possibly
   // contact details). Models often add commentary AFTER the letter but before
   // the next heading — cut the body after the signature block: from the last
@@ -1052,6 +1008,103 @@ app.post('/api/export-package', async (req, res) => {
     return lines.slice(0, cut).join('\n').trimEnd();
   }
 
+  // Plausibility gate: a detected document must be a REAL document — it
+  // carries the owner's identity (name in the header or the signature) and
+  // has substantial content. Without the gate the newest match always won,
+  // and models routinely add numbered update sections that merely MENTION
+  // CV/Cover Letter — e.g. "## 3. Aktualizacja CV (AXE PRIM bullet)" around a
+  // 3-line bullet swap. Such a fragment beat the latest full package and the
+  // exported "CV" was a stub instead of the document
+  // (observed: "EDGE Group - Principal, Networks").
+  const PKG_MIN_BODY = 300;
+  const escLast = ownerLast.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const plausible = (body) => body.length >= PKG_MIN_BODY &&
+    new RegExp(escLast, 'i').test(body);
+  const gate = (body, trimmer) => {
+    if (body == null) return null;
+    if (!body.trim()) return '';
+    return plausible(body) ? (trimmer ? trimmer(body) : body) : null;
+  };
+
+  const md = normalizeDocMarkers(unwrapCodeFence(String(content || '')));
+  return {
+    cv: gate(extractCv(md)),
+    clEn: gate(extractCl(md, false), trimAfterSignature),
+    clDe: gate(extractCl(md, true), trimAfterSignature)
+  };
+}
+
+// Every part is taken from the LATEST assistant message containing it, so
+// the newest version always wins. Returns the messages used per part plus
+// the parts themselves ({cv, clEn, clDe}) and a document title taken from
+// one of the ACTUALLY USED messages (never from an unrelated newer message).
+function pickPackageParts(messages, ownerName) {
+  const ownerLast = ownerName.split(/\s+/).pop();
+  const escOwnerLast = ownerLast.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const parts = [];
+  for (const m of messages) {
+    if (!m || m.role !== 'assistant') continue;
+    parts.push({ msg: m, p: extractPackageMessage(m.content, ownerName) });
+  }
+  const findPart = (get) => {
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const p = get(parts[i].p);
+      if (p != null) return { msg: parts[i].msg, value: p };
+    }
+    return null;
+  };
+  const cv = findPart((p) => p.cv);
+  const clEn = findPart((p) => p.clEn);
+  const clDe = findPart((p) => p.clDe);
+  const cvMsg = cv ? cv.msg : null;
+  const clEnMsg = clEn ? clEn.msg : null;
+  const clDeMsg = clDe ? clDe.msg : null;
+
+  // Title from the newest used message that names the package
+  const titleMsg = [cvMsg, clEnMsg, clDeMsg].filter(Boolean)
+    .find((m) => /^#\s+(?:Pakiet|PAKIET|AKTUALIZACJA)/im.test(m.content) || new RegExp('^#\\s+.*' + escOwnerLast, 'im').test(m.content));
+  const title = ((titleMsg || cvMsg || { content: '' }).content.match(/^#\s+(?:Pakiet|PAKIET|AKTUALIZACJA|Zaktualizowany|Zaktualizowana)[^\n]*/im)
+    || (titleMsg || cvMsg || { content: '' }).content.match(new RegExp('^#\\s+.*' + escOwnerLast + '[^\\n]*', 'im'))
+    || ['Application package'])[0].replace(/^#\s+/i, '');
+
+  return {
+    cvMsg, clEnMsg, clDeMsg, title,
+    cv: cv ? cv.value : null,
+    clEn: clEn ? clEn.value : null,
+    clDe: clDe ? clDe.value : null
+  };
+}
+
+app.post('/api/export-package', async (req, res) => {
+  const { conversationId } = req.body || {};
+  if (!conversationId) return res.status(400).json({ error: 'Missing conversationId' });
+
+  const conv = loadConversation(conversationId);
+  if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+
+  // A conversation may hold several CV versions over time (full packages,
+  // updates, standalone CV regenerations). For each part (CV / CL_EN / CL_DE)
+  // export from the LATEST assistant message that contains it.
+  const ownerName = String(loadConfig().ownerName || '').trim();
+  if (!ownerName) {
+    return res.status(422).json({ error: 'Owner name not configured — set "Owner name (for CV detection)" in the sidebar configuration and save it' });
+  }
+
+  const { cvMsg, clEnMsg, clDeMsg, cv, clEn, clDe, title } =
+    pickPackageParts(conv.messages, ownerName);
+  if (!cvMsg && !clEnMsg && !clDeMsg) {
+    return res.status(422).json({
+      error: 'No application package (CV + Cover Letter) found in this conversation'
+    });
+  }
+
+  const pandoc = await new Promise((resolve) => {
+    execFile('pandoc', ['--version'], (err) => resolve(!err));
+  });
+  if (!pandoc) {
+    return res.status(500).json({ error: 'pandoc not found on this system' });
+  }
+
   // File names start with the conversation name
   const safeName = String(conv.name || 'conversation')
     .replace(/[\\/:*?"<>|]+/g, '')
@@ -1067,30 +1120,27 @@ app.post('/api/export-package', async (req, res) => {
     });
   }
 
-  // Standalone CV (regenerated outside a package): extractDoc starts at the
+  // Standalone CV (regenerated outside a package): extraction starts at the
   // owner's "# JAN KOWALSKI" H1, so the chatty intro before it is already
-  // dropped and no separate slicing is needed.
+  // dropped and no separate slicing is needed. Parts arrive parsed,
+  // gated and signature-trimmed from pickPackageParts.
 
   // Remove AI-typical em dashes: "word — word" -> "word - word"
   function stripEmDashes(text) {
     return text.replace(/—/g, '-').replace(/–/g, '-');
   }
 
-  const mdOf = (m) => (m ? m.content : '');
-  const cvFromPkg = cvMsg ? extractCv(prepMd(cvMsg)) : null;
-  const clEnRaw = clEnMsg ? extractCl(prepMd(clEnMsg), false) : null;
-  const clDeRaw = clDeMsg ? extractCl(prepMd(clDeMsg), true) : null;
   const parts = [
-    ['CV', cvFromPkg, 'CV'],
-    ['CoverLetter_EN', clEnRaw == null ? null : trimAfterSignature(clEnRaw), 'cover'],
-    ['CoverLetter_DE', clDeRaw == null ? null : trimAfterSignature(clDeRaw), 'Anschreiben'],
+    ['CV', cv, 'CV'],
+    ['CoverLetter_EN', clEn, 'cover'],
+    ['CoverLetter_DE', clDe, 'Anschreiben'],
   ];
   // A part whose heading exists but whose body is empty is reported, never
   // silently skipped (previously an empty section just vanished from output).
   const emptyPartKinds = [
-    ['CV', cvFromPkg],
-    ['CoverLetter_EN', clEnRaw],
-    ['CoverLetter_DE', clDeRaw],
+    ['CV', cv],
+    ['CoverLetter_EN', clEn],
+    ['CoverLetter_DE', clDe],
   ].filter((p) => p[1] !== null && !String(p[1]).trim()).map((p) => p[0]);
   const kindFile = (kind) => { for (const p of parts) if (p[0] === kind) return p[2] || kind; return kind; };
 
@@ -1142,7 +1192,11 @@ app.post('/api/export-package', async (req, res) => {
     const failed = emptyPartKinds.map((k) => `${k}: section heading found but the body is empty`);
     for (const [kind, content] of parts) {
       if (!content) continue;
-      const hash = contentHash(stripEmDashes(content));
+      // The hash covers the BODY and the TITLE: the rendered ODT embeds
+      // "# title" as its first heading, so a re-export with the same body
+      // under a different title must rewrite the file, not reuse the stale
+      // one (an old buggy title once persisted because only the body hashed).
+      const hash = contentHash(stripEmDashes(title) + '\n\n' + stripEmDashes(content));
       if (manifest[kind] && manifest[kind].hash === hash && fs.existsSync(path.join(outDir, manifest[kind].file))) {
         // Same content as last export -> reuse the existing file
         exported.push(manifest[kind].file);
@@ -2905,6 +2959,8 @@ if (require.main !== module) {
     DATA_DIR,
     extractMetryka,
     parseOfferFile,
+    extractPackageMessage,
+    pickPackageParts,
     normalizeTagsInput,
     deriveOfferMeta,
     bulkOfferTitle,

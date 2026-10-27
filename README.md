@@ -169,6 +169,14 @@ on PATH).
   natural-language headings on H2–H4 (`## CV (English…)`, `### Cover Letter (EN)`,
   `## Anschreiben (Deutsch…)`), and standalone CV regeneration messages
   (`# Jan Kowalski …`, also inside a ```markdown fence) are all recognized.
+  A detected document must also be a **real document** — its body must carry
+  the owner's name and have substantial content. Editorial fragments that
+  merely mention "CV" (e.g. a numbered `## 3. Aktualizacja CV (AXE PRIM
+  bullet)` section with a two-line bullet swap) are ignored, so they can no
+  longer beat the latest full package as "the newest version" (that bug made
+  the EDGE Group export produce a stub instead of the CV, and stamped the
+  fragment's message title — "Aktualizacja formularza KATIM" — on the
+  exported files).
 - Each part is taken from the **latest** assistant message containing it —
   a full package, a partial package update, or a standalone CV regeneration
   all count, so the newest version always wins.

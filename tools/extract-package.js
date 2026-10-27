@@ -2,6 +2,8 @@
 /*
  * extract-package.js — extract CV / Cover Letter sections from saved
  * application-package chat messages and convert them to ODT via pandoc.
+ * Uses the same marker-based extraction + plausibility gate + latest-wins
+ * selection as the app export (POST /api/export-package).
  *
  * Usage:
  *   node extract-package.js                 list conversations with packages
@@ -11,32 +13,24 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
+const { pickPackageParts } = require('../server.js');
+
 const CONV_DIR = path.join(__dirname, '..', 'data', 'conversations');
 const OUT_DIR = path.join(__dirname, '..', 'moje_dok', 'odt');
 const PANDOC = 'pandoc';
 
-function listPackages() {
-  const out = [];
-  for (const dir of fs.readdirSync(CONV_DIR)) {
-    const file = path.join(CONV_DIR, dir, 'conversation.json');
-    if (!fs.existsSync(file)) continue;
-    const conv = JSON.parse(fs.readFileSync(file, 'utf8'));
-    conv.messages.forEach((m, i) => {
-      if (m.role === 'assistant' && m.content.includes('## 4. CV') && /Cover Letter/i.test(m.content)) {
-        out.push({ convId: conv.id, convName: conv.name, msgIndex: i, content: m.content });
-      }
-    });
+// The owner's name is the CV document identity (H1 name line) — loaded from
+// data/config.json exactly like the server export does (loadConfig strips
+// the BOM; PowerShell pipelines must not re-add it).
+function ownerNameFromConfig() {
+  const cfg = path.join(__dirname, '..', 'data', 'config.json');
+  try {
+    let raw = fs.readFileSync(cfg, 'utf8');
+    raw = raw.replace(/^\uFEFF/, '');
+    return String((JSON.parse(raw).ownerName) || '').trim();
+  } catch (_) {
+    return '';
   }
-  return out;
-}
-
-// first line of a section = heading, content until next ### or ## heading
-function cutSection(md, startMarker, stopRe) {
-  const s = md.indexOf(startMarker);
-  if (s === -1) return null;
-  const rest = md.slice(s + startMarker.length);
-  const m = rest.match(stopRe);
-  return (m ? rest.slice(0, m.index) : rest).trim();
 }
 
 function slug(s) {
@@ -53,45 +47,56 @@ function toOdt(md, outFile) {
   fs.unlinkSync(tmp);
 }
 
+const stripEmDashes = (t) => String(t || '').replace(/—/g, '-').replace(/–/g, '-');
+
 function main() {
-  const packages = listPackages();
-  if (packages.length === 0) { console.log('No package messages found.'); return; }
+  const ownerName = ownerNameFromConfig();
+  if (!ownerName) {
+    console.error('Owner name not configured — set "ownerName" in data/config.json (the sidebar "Owner name" field in the app).');
+    process.exit(1);
+  }
 
   if (process.argv.length < 3) {
     console.log('Saved application packages:');
-    packages.forEach((p, i) =>
-      console.log(`  [${i}] conv=${p.convId} msg#${p.msgIndex}  "${p.convName}"`));
-    console.log('\nRun: node extract-package.js <convId|index> [n]');
+    let n = 0;
+    for (const dir of fs.readdirSync(CONV_DIR)) {
+      const file = path.join(CONV_DIR, dir, 'conversation.json');
+      if (!fs.existsSync(file)) continue;
+      const conv = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const pick = pickPackageParts(conv.messages || [], ownerName);
+      if (!pick.cv && !pick.clEn && !pick.clDe) continue;
+      const kinds = [
+        pick.cv ? 'CV' : null,
+        pick.clEn ? 'CL_EN' : null,
+        pick.clDe ? 'CL_DE' : null
+      ].filter(Boolean).join('/');
+      console.log(`  [${n++}] conv=${conv.id}  "${conv.name}"  (${kinds})`);
+    }
+    console.log('\nRun: node extract-package.js <convId|index>');
     return;
   }
 
   const key = process.argv[2];
-  let pkg;
-  if (/^\d+$/.test(key) && packages[+key]) pkg = packages[+key];
-  else {
-    const matches = packages.filter(p => p.convId === key);
-    if (matches.length === 0) { console.error(`No package for conversation ${key}`); process.exit(1); }
-    pkg = matches[matches.length - 1]; // last by default
+  const convs = fs.readdirSync(CONV_DIR).filter((d) => fs.existsSync(path.join(CONV_DIR, d, 'conversation.json')));
+  const convDir = /^\d+$/.test(key) && convs.length ? convs[Math.min(+key, convs.length - 1)] : convs.find((d) => d === key);
+  if (!convDir) { console.error(`No conversation ${key}`); process.exit(1); }
+  const conv = JSON.parse(fs.readFileSync(path.join(CONV_DIR, convDir, 'conversation.json'), 'utf8'));
+
+  const pick = pickPackageParts(conv.messages || [], ownerName);
+  if (!pick.cv && !pick.clEn && !pick.clDe) {
+    console.log('No package for this conversation.'); return;
   }
-  if (process.argv[3] !== undefined && packages[+process.argv[3]]) pkg = packages[+process.argv[3]];
 
-  const md = pkg.content;
-  const title = (md.match(/^#\s+(?:Pakiet|PAKIET|Package|APPLICATION)[^\n]*/m) || ['Package'])[0]
-    .replace(/^#\s+/i, '').replace(/[—–]/g, '-');
-  const base = slug(title);
   fs.mkdirSync(OUT_DIR, { recursive: true });
-
-  const cv = cutSection(md, '### 4a.', /^###|^## /m);
-  const clEn = cutSection(md, '### 4b.', /^###|^## /m);
-  const clDe = cutSection(md, '### 4c.', /^###|^## /m);
-
+  const base = slug(stripEmDashes(pick.title)) || conv.id;
   const jobs = [
-    ['CV', cv], ['CoverLetter_EN', clEn], ['CoverLetter_DE', clDe],
+    ['CV', pick.cv], ['CoverLetter_EN', pick.clEn], ['CoverLetter_DE', pick.clDe],
   ];
   for (const [kind, content] of jobs) {
     if (!content) { console.log(`- ${kind}: not found, skipped`); continue; }
+    if (!content.trim()) { console.log(`- ${kind}: heading found but the body is empty, skipped`); continue; }
     const file = `${base}_${kind}.odt`;
-    toOdt(`# ${title}\n\n${content}`, file);
+    toOdt(`# ${stripEmDashes(pick.title)}\n\n${stripEmDashes(content)}`, file);
     console.log(`- ${file}  (${content.length} chars)`);
   }
 }

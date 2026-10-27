@@ -354,3 +354,136 @@ test('parseLinkedinGuestCards: guest search card -> offer', () => {
   assert.strictEqual(jobs[0].savedAt, '2026-10-13');
   assert.ok(!jobs[0].url.includes('?'), 'tracking query stripped');
 });
+
+// ---- Package export part selection ----
+// Regression: "EDGE Group - Principal, Networks" — a later KATIM-form
+// message numbered "## 3. Aktualizacja CV (AXE PRIM bullet)" (an editorial
+// bullet swap, not a document) outranked the full package as the latest CV
+// match, so the exported CV ODT contained the update comment instead of the
+// CV, and the document title became "Aktualizacja formularza KATIM".
+
+const OWNER = 'Tomasz Kuehn';
+
+const PKG_FULL = [
+  '# Pakiet aplikacyjny: Principal Engineer - Networks (EDGE Group, Abu Dhabi)',
+  '## 1. Podsumowanie stanowiska',
+  'EDGE Group is a UAE-based advanced technology and defence group focused on networking and satellite communication systems.',
+  '## 2. Niemiecki na poziomie B1 - czy to problem?',
+  'Brak niemieckiego nie jest blokerem dla tej roli.',
+  '## 4. CV (ATS-friendly, EN) + Cover Letter (EN)',
+  '',
+  'Oferta jest anglojezyczna (ZEA), wiec cover letter tylko po angielsku. Usunalem MatchX z experience.',
+  '',
+  '**TOMASZ KUEHN**',
+  'Hamburg, Germany | tomasz.kuehn@gmail.com | +49 162 8166352',
+  '',
+  '### PROFESSIONAL SUMMARY',
+  'Hands-on networking and wireless systems engineer and technical leader with more than 20 years of experience in communication protocols, mesh networking, wireless systems and satellite communication software. I design and build complete systems from architecture and prototyping through integration, testing and certification.',
+  '### PROFESSIONAL EXPERIENCE',
+  '**CoreNetiX GmbH, Berlin, Germany | Head of Software Development | 2017 - 07/2019**',
+  '- Redesigned a failing IoT network protocol into a reliable dual-band mesh network, demonstrated live at the Essen electronics fair, followed by EU and VdS radio certification.',
+  '### EDUCATION',
+  'Master of Science in Computer Science, Poznan University of Technology, Poland',
+  '### CONTRACTING NOTE',
+  'Windoorsen, Eduintegrator and initial CoreNetiX roles were long-term full-time B2B engagements invoiced through AXE PRIM.',
+  '---',
+  '',
+  '**COVER LETTER (EN)**',
+  '',
+  'Subject: Application for Principal Engineer - Networks (Networking Prototyping)',
+  '',
+  'Dear Hiring Team,',
+  '',
+  'I am applying for the Principal Engineer - Networks position at EDGE Group. Across these roles I did exactly what this position asks for: design and develop communication protocols and networking software.',
+  '',
+  'Best regards,',
+  'Tomasz Kuehn',
+  '## 5. Ocena rekrutera i rekomendacja',
+  'Moja rekomendacja: aplikowac, szanse sa realne.'
+].join('\n');
+
+const KATIM_UPDATE = [
+  '# Aktualizacja formularza KATIM',
+  '## 1. Wzmocnienie punktu 8 (relevant experience)',
+  'W formularzu odpowiedz zostaje bez zmian.',
+  '## 3. Aktualizacja CV (AXE PRIM bullet)',
+  'Zamien bullet w AXE PRIM na:',
+  '- Built and operated a local wireless ISP: Mikrotik-based routed and bridged backbones, hotspots, VPN links, base stations and custom router software.'
+].join('\n');
+
+test('extractPackageMessage: editorial CV fragment is rejected by the plausibility gate', () => {
+  const out = s.extractPackageMessage(KATIM_UPDATE, OWNER);
+  assert.strictEqual(out.cv, null, 'a mentioning "Aktualizacja CV" heading must not yield a CV');
+  assert.strictEqual(out.clEn, null);
+  assert.strictEqual(out.clDe, null);
+});
+
+test('extractPackageMessage: heading with an empty body is reported as an empty string', () => {
+  const out = s.extractPackageMessage('## 4. CV (ATS-friendly, EN)\n## 5. Ocena rekrutera', OWNER);
+  assert.strictEqual(out.cv, '');
+  assert.strictEqual(out.clEn, null);
+});
+
+test('extractPackageMessage: classic numbered 4a/4b sections still parse', () => {
+  const md = [
+    '# PAKIET: QA Lead — ACME',
+    '### 4a. CV',
+    '**TOMASZ KUEHN**',
+    'Hamburg, Germany | tomasz.kuehn@gmail.com | +49 162 8166352',
+    '### PROFESSIONAL SUMMARY',
+    'Hands-on QA and networking engineer with more than 20 years of experience in communication protocols, wireless systems and satellite communication software, spanning embedded firmware, test campaigns and team leadership.',
+    '### 4b. Cover Letter (EN)',
+    'Dear Hiring Team,',
+    '',
+    'I am applying for the QA Lead position at ACME. With more than 20 years of hands-on engineering in communication protocols, embedded systems and regulated environments, I bring the certification discipline and technical leadership this role requires.',
+    'My background spans radio certification campaigns, satellite communication software and leading multidisciplinary teams from failing prototypes to production-ready systems.',
+    '',
+    'Best regards,',
+    'Tomasz Kuehn'
+  ].join('\n');
+  const out = s.extractPackageMessage(md, OWNER);
+  assert.ok(out.cv.includes('TOMASZ KUEHN'));
+  assert.ok(out.cv.length >= 300);
+  assert.ok(out.clEn.includes('Dear Hiring Team'));
+  assert.ok(/Tomasz Kuehn\s*$/.test(out.clEn), 'signature block kept, trailing commentary dropped');
+});
+
+test('pickPackageParts: CV fragment never overrides the full package (EDGE regression)', () => {
+  const msgs = [
+    { role: 'user', content: 'offer' },
+    { role: 'assistant', content: PKG_FULL },
+    { role: 'user', content: 'KATIM questions' },
+    { role: 'assistant', content: KATIM_UPDATE }
+  ];
+  const out = s.pickPackageParts(msgs, OWNER);
+  assert.ok(out.cvMsg === msgs[1], 'CV must come from the full package message, not the KATIM fragment');
+  assert.ok(out.cv.startsWith('# **TOMASZ KUEHN**'), 'CV body starts at the owner name line (preamble dropped)');
+  assert.ok(!out.cv.includes('Aktualizacja formularza KATIM'));
+  assert.ok(!out.cv.startsWith('Oferta jest anglojezyczna'), 'editorial preamble must not leak into the CV');
+  assert.ok(out.clEnMsg === msgs[1]);
+  assert.ok(out.clEn.includes('Subject: Application for Principal Engineer'));
+  assert.strictEqual(out.clDe, null);
+  assert.ok(/^Pakiet aplikacyjny/.test(out.title), `title from the package message, got: ${out.title}`);
+});
+
+test('pickPackageParts: a later full standalone CV update still wins', () => {
+  const cv2 = [
+    '# TOMASZ KUEHN',
+    'Hamburg, Germany | tomasz.kuehn@gmail.com | +49 162 8166352',
+    '',
+    'Hands-on networking and wireless systems engineer and technical leader with more than 20 years of experience in communication protocols, mesh networking, wireless systems and satellite communication software.',
+    '',
+    '### PROFESSIONAL EXPERIENCE',
+    '**IDAIR GmbH, Hamburg | Systems Software Engineer | 02/2023 - 01/2026**',
+    '- Led DO-160 certification activities for a multifunctional communication module for VIP aircraft.',
+    ''
+  ].join('\n');
+  const msgs = [
+    { role: 'assistant', content: PKG_FULL },
+    { role: 'assistant', content: KATIM_UPDATE },
+    { role: 'assistant', content: cv2 }
+  ];
+  const out = s.pickPackageParts(msgs, OWNER);
+  assert.ok(out.cvMsg.content === cv2, 'a full CV outside a package (owner-H1) is still the newest version');
+  assert.ok(out.clEnMsg && out.clEn.includes('Subject: Application'), 'cover letter still taken from the package message');
+});
