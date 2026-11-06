@@ -122,6 +122,42 @@ test('normalizeTagsInput: empty object -> empty patch (no-op)', () => {
   assert.deepStrictEqual(s.normalizeTagsInput({}), {});
 });
 
+// ---- expired tag ----
+test('normalizeTagsInput: expired boolean (optional tag)', () => {
+  assert.deepStrictEqual(s.normalizeTagsInput({ expired: true }), { expired: true });
+  assert.deepStrictEqual(s.normalizeTagsInput({ expired: false }), { expired: false });
+  assert.deepStrictEqual(s.normalizeTagsInput({ expired: null }), { expired: false });
+  assert.deepStrictEqual(s.normalizeTagsInput({ status: 'applied', expired: true }), { status: 'applied', expired: true });
+  assert.deepStrictEqual(s.normalizeTagsInput({}), {}, 'no expired key -> not in the patch');
+});
+
+// ---- interview / rejected statuses ----
+test('normalizeTagsInput: interview and rejected statuses are accepted', () => {
+  assert.deepStrictEqual(s.normalizeTagsInput({ status: 'interview' }), { status: 'interview' });
+  assert.deepStrictEqual(s.normalizeTagsInput({ status: 'rejected' }), { status: 'rejected' });
+  assert.strictEqual(s.normalizeTagsInput({ status: 'nope' }), null, 'unknown values still rejected');
+});
+
+test('analyzeConversationTags: interview and rejected detection', () => {
+  const mk = (texts) => ({ messages: texts.map((content) => ({ role: 'assistant', content })) });
+  assert.strictEqual(s.analyzeConversationTags(mk(['Odezwali się — zaproszenie na rozmowę kwalifikacyjną w przyszłym tygodniu.'])).status, 'interview');
+  assert.strictEqual(s.analyzeConversationTags(mk(['Great news: we would like to move to the interview stage.'])).status, 'interview');
+  assert.strictEqual(s.analyzeConversationTags(mk(['Wysłaliśmy aplikację, potem przyszła odpowiedź: niestety aplikacja została odrzucona.'])).status, 'rejected');
+  assert.strictEqual(s.analyzeConversationTags(mk(['Thank you for applying. Unfortunately your application was rejected.'])).status, 'rejected');
+  assert.strictEqual(s.analyzeConversationTags(mk(['Rejection email arrived this morning.'])).status, 'rejected');
+  assert.strictEqual(s.analyzeConversationTags(mk(['Deadline is close, apply this week. Great offer.'])).status, null, 'no application statement');
+  assert.strictEqual(s.analyzeConversationTags(mk(['Application has been sent today.'])).status, 'applied');
+});
+
+test('analyzeConversationTags: expired posting is detected conservatively', () => {
+  const mk = (texts) => ({ messages: texts.map((content) => ({ role: 'assistant', content })) });
+  assert.strictEqual(s.analyzeConversationTags(mk(['Metryka OK.\nOferta już wygasła, nie warto aplikować.'])).expired, true);
+  assert.strictEqual(s.analyzeConversationTags(mk(['The recruiter replied: the position has been filled.'])).expired, true);
+  assert.strictEqual(s.analyzeConversationTags(mk(['The posting is no longer available on the company portal.'])).expired, true);
+  assert.strictEqual(s.analyzeConversationTags(mk(['Deadline is close, apply this week. Great offer.'])).expired, false, 'no explicit expiration -> false');
+  assert.strictEqual(s.analyzeConversationTags(mk(['Metryka: interview 35%.'])).expired, false);
+});
+
 // ---- job search: html -> text ----
 test('offerHtmlToText: strips tags, keeps breaks, decodes entities', () => {
   const t = s.offerHtmlToText('<p>Hello&nbsp;<b>World</b></p><ul><li>One</li><li>Two</li></ul><script>x</script>');
@@ -285,7 +321,7 @@ test('normalizeJsonLdOffer: remote detection from title/description', () => {
 });
 
 test('JOB_SOURCES: XING, Stepstone, NoFluffJobs, pracuj are wired as html sources', () => {
-  for (const id of ['xing', 'stepstone', 'nofluffjobs', 'pracuj']) {
+  for (const id of ['xing', 'stepstone', 'nofluffjobs', 'pracuj', 'rocketjobs']) {
     const src = s.JOB_SOURCES.find((x) => x.id === id);
     assert.ok(src, id + ' source present');
     assert.strictEqual(src.kind, 'html', id + ' is an html source');
@@ -353,6 +389,112 @@ test('parseLinkedinGuestCards: guest search card -> offer', () => {
   assert.strictEqual(jobs[0].id, '4362132219');
   assert.strictEqual(jobs[0].savedAt, '2026-10-13');
   assert.ok(!jobs[0].url.includes('?'), 'tracking query stripped');
+});
+
+// ---- RocketJobs (PL): listing ItemList -> detail JobPosting ----
+// Regression setup: the listing page renders offer CARDS client-side, so the
+// source must pull the offer URLs out of the embedded JSON-LD ItemList (not
+// out of <a href> anchors).
+const RJ_LISTING = [
+  '<html><head><script type="application/ld+json">{"@context":"https://schema.org","@type":"CollectionPage",',
+  '"mainEntity":{ "@type":"ItemList", "itemListElement":[',
+  '{"@type":"ListItem","position":1,"url":"https://rocketjobs.pl/oferta-pracy/power-media-embedded-developer-nrf-stm32-esp32--poznan-inzynieria-elektronika","name":"Embedded Developer (nRF / STM32 / ESP32)"},',
+  '{"@type":"ListItem","position":2,"url":"https://rocketjobs.pl/oferta-pracy/power-media-senior-embedded-developer-nrf-stm32-esp32--poznan-inzynieria-elektronika","name":"Senior Embedded Developer (nRF / STM32 / ESP32)"},',
+  '{"@type":"ListItem","position":3,"url":"https://other-portal.example/oferta-pracy/not-a-rocketjobs-link","name":"Foreign offer"}]}}</script></head>',
+  '<body><div class="MuiBox-root">cards are client-rendered, no <a href="/oferta-pracy/..."> anchors here</div></body></html>'
+].join('');
+const RJ_DETAIL = (title, org, city) => '<html><head><script type="application/ld+json">{"@type":"JobPosting","title":"' + title +
+  '","hiringOrganization":{"@type":"Organization","name":"' + org + '"},"datePosted":"2026-10-30T11:05:10Z",' +
+  '"jobLocation":{"@type":"Place","address":{"@type":"PostalAddress","addressCountry":"PL","addressLocality":"' + city + '"}},' +
+  '"baseSalary":{"@type":"MonetaryAmount","currency":"PLN","value":{"@type":"QuantitativeValue","unitText":"HOUR","minValue":50,"maxValue":90}},' +
+  '"description":"<p>Role: embedded real-time software in Poland. ' + 'Long description body for the plausibility gate. '.repeat(6) + '</p>"}</script></head><body></body></html>';
+
+test('JOB_SOURCES: rocketjobs html source wired', () => {
+  const src = s.JOB_SOURCES.find((x) => x.id === 'rocketjobs');
+  assert.ok(src, 'rocketjobs source present');
+  assert.strictEqual(src.kind, 'html');
+  assert.ok(src.linkRe && src.listing, 'linkRe + listing present');
+  const u = src.listing({ keywords: 'embedded', location: 'remote' }, 'embedded');
+  assert.ok(u.includes('/oferty-pracy/praca-zdalna?'), 'pure remote location -> remote region');
+  const u2 = src.listing({ keywords: 'embedded', location: 'Poznan' }, 'embedded');
+  assert.ok(u2.includes('/oferty-pracy/wszystkie-lokalizacje?keyword=embedded'), 'city location -> all of Poland');
+});
+
+test('fetchRocketjobsOffers via html harness: ItemList urls -> detail JSON-LD offers', async () => {
+  const src = s.JOB_SOURCES.find((x) => x.id === 'rocketjobs');
+  const fetcher = src.fetchOffers || s.jobFetchHtmlSource;
+  const calls = [];
+  const offers = await fetcher(src, { keywords: 'embedded', location: 'Poznan' }, {
+    getText: async (u) => {
+      calls.push(u);
+      if (u.includes('oferty-pracy')) return RJ_LISTING;
+      throw new Error('unexpected detail for ' + u);
+    },
+    delay: 0
+  });
+  assert.strictEqual(offers.length, 0, 'stub has no detail pages, nothing crashes');
+  assert.strictEqual(calls.filter((u) => u.includes('/oferta-pracy/')).length, 2, 'only rocketjobs ItemList urls fetched, foreign host ignored');
+  assert.ok(calls.some((u) => u.includes('power-media-embedded-developer')));
+  assert.strictEqual(calls.some((u) => u.includes('other-portal.example')), false);
+  // Now with detail pages served for each slug -> full normalized offers.
+  const pages = {
+    'https://rocketjobs.pl/oferta-pracy/power-media-embedded-developer-nrf-stm32-esp32--poznan-inzynieria-elektronika': RJ_DETAIL('Embedded Developer (nRF / STM32 / ESP32)', 'Power Media', 'Poznan'),
+    'https://rocketjobs.pl/oferta-pracy/power-media-senior-embedded-developer-nrf-stm32-esp32--poznan-inzynieria-elektronika': RJ_DETAIL('Senior Embedded Developer (nRF / STM32 / ESP32)', 'Power Media', 'Poznan')
+  };
+  const offers2 = await fetcher(src, { keywords: 'embedded', location: 'Poznan' }, {
+    getText: async (u) => (u.includes('oferty-pracy') ? RJ_LISTING : (pages[u] || (() => { throw new Error('404 ' + u); })())),
+    delay: 0
+  });
+  assert.strictEqual(offers2.length, 2);
+  const o = offers2[0];
+  assert.strictEqual(o.company, 'Power Media');
+  assert.strictEqual(o.location, 'Poznan, PL');
+  assert.ok(o.description.length >= 300, 'full description from JobPosting JSON-LD');
+  assert.match(o.savedAt, /^2026-10-30/);
+  assert.ok(o.url.includes('/oferta-pracy/'), 'offer url preserved');
+});
+
+// ---- remotely.de (DE/remote): sitemap slugs -> detail JobPosting JSON-LD ----
+test('fetchRemotelyDeOffers: sitemap slug scoring picks keyword hits, details read job-posting-jsonld', async () => {
+  const src = s.JOB_SOURCES.find((x) => x.id === 'remotelyde');
+  assert.ok(src && typeof src.fetchOffers === 'function', 'remotelyde custom fetcher wired');
+  const detail = (title, org, city) => '<html><head><script id="job-posting-jsonld" type="application/ld+json">' + JSON.stringify({
+    '@type': 'JobPosting', title,
+    description: '<p>Embedded work in ' + city + '. ' + 'Detail body padding for the length gate. '.repeat(10),
+    datePosted: '2026-10-23T10:00:00.000+00:00',
+    hiringOrganization: { '@type': 'Organization', name: org },
+    url: 'https://www.remotely.de/job/' + org.toLowerCase(),
+    jobLocation: { '@type': 'Place', address: { '@type': 'PostalAddress', addressLocality: city, addressCountry: 'DE' } }
+  }) + '</script></head><body></body></html>';
+  const sitemap = [
+    '<urlset>',
+    '<url><loc>https://www.remotely.de/job/gamma-sales-manager-mwd</loc></url>',
+    '<url><loc>https://www.remotely.de/job/beta-embedded-developer-mwd</loc></url>',
+    '<url><loc>https://www.remotely.de/job/acme-embedded-software-engineer-mwd</loc></url>',
+    '<url><loc>https://www.remotely.de/job/delta-embedded-fpga-mwd</loc></url>',
+    '</urlset>'
+  ].join('');
+  const pages = {
+    'https://www.remotely.de/job/gamma-sales-manager-mwd': detail('Sales Manager', 'Gamma Co', 'Hamburg'),
+    'https://www.remotely.de/job/beta-embedded-developer-mwd': detail('Embedded Developer', 'Beta AG', 'Berlin'),
+    'https://www.remotely.de/job/acme-embedded-software-engineer-mwd': detail('Embedded Software Engineer', 'Acme GmbH', 'Bremen'),
+    'https://www.remotely.de/job/delta-embedded-fpga-mwd': detail('Embedded FPGA Developer', 'Delta SE', 'Berlin')
+  };
+  const fetches = [];
+  const offers = await src.fetchOffers(src, { keywords: 'embedded engineer', location: 'remote' }, {
+    getText: async (u) => { fetches.push(u); return (u.includes('sitemap') ? sitemap : pages[u] || (() => { throw new Error('404 ' + u); })()); },
+    delay: 0
+  });
+  assert.ok(fetches[1].includes('/job/acme-'), 'all-keyword hit sorts first');
+  assert.strictEqual(offers.length, 3, 'gamma has no keyword hit -> never fetched');
+  assert.strictEqual(fetches.some((u) => u.includes('gamma-')), false, 'no-hit slugs are skipped entirely');
+  const o = offers[0];
+  assert.strictEqual(o.company, 'Acme GmbH');
+  assert.strictEqual(o.location, 'Bremen, DE');
+  assert.strictEqual(o.workplace, 'remote');
+  assert.match(o.savedAt, /^2026-10-23/);
+  assert.strictEqual(o.source, 'remotelyde');
+  assert.ok(o.description.length >= 300);
 });
 
 // ---- Package export part selection ----
@@ -486,4 +628,115 @@ test('pickPackageParts: a later full standalone CV update still wins', () => {
   const out = s.pickPackageParts(msgs, OWNER);
   assert.ok(out.cvMsg.content === cv2, 'a full CV outside a package (owner-H1) is still the newest version');
   assert.ok(out.clEnMsg && out.clEn.includes('Subject: Application'), 'cover letter still taken from the package message');
+});
+
+// Regression: a cover letter that OPENS with the sender block
+// ("## Cover Letter (EN)" followed by a bold owner line) made the extracted
+// letter body empty — the promoted owner H1 was read as a document boundary,
+// so the export failed with "heading found but the body is empty"
+// (observed: "Senior embedded Bremen").
+test('pickPackageParts: letter sender block right after the CL heading stays in the letter', () => {
+  const cl = [
+    '## Cover Letter (EN)',
+    '',
+    '**Tomasz Kuehn**',
+    'Hamburg, Germany | tomasz.kuehn@example.com | +49 123 4567',
+    '',
+    'Dear Hiring Team,',
+    '',
+    'I am applying for the freelance Senior Embedded Software Engineer position in Bremen with strong focus on safety-critical systems.' +
+    ' I bring more than twenty years of experience in embedded real-time software and satellite flight software development.',
+    '',
+    'Kind regards,',
+    'Tomasz Kuehn',
+    '',
+    '---'
+  ].join('\n');
+  const msg = ['# 4. CV (ATS-friendly) i Cover Letter', '', '## CV', '', '**TOMASZ KUEHN**',
+    'Hands-on networking and wireless systems engineer with more than 20 years of experience in communication protocols.',
+    '', '### PROFESSIONAL EXPERIENCE',
+    '**IDAIR GmbH, Hamburg | Systems Software Engineer | 02/2023 - 01/2026**',
+    '- Led DO-160 certification activities for a multifunctional communication module for VIP aircraft and owned the full verification workflow.',
+    '- Resolved hardware and software integration defects for the cabin management system and ran qualification testing.',
+    '', cl, '', '# 5. Ocena aplikacji'].join('\n');
+  const out = s.pickPackageParts([{ role: 'assistant', content: msg }], OWNER);
+  assert.ok(out.clEn && out.clEn.trim().length > 300, 'letter body is NOT empty: ' + (out.clEn == null ? 'null' : out.clEn.length));
+  assert.ok(out.clEn.startsWith('# **Tomasz Kuehn**'), 'sender block kept as the letter opening');
+  assert.ok(out.clEn.includes('Dear Hiring Team'));
+  assert.ok(!out.clEn.includes('---'), 'trailing rule cut by the signature trim');
+  assert.ok(!out.clEn.includes('# 5.'), 'next analysis section not swallowed');
+  assert.ok(out.cv.includes('# **TOMASZ KUEHN**'), 'CV still extracted');
+});
+
+// ---- GulfHire: full "The posting" instead of the listing summary ----
+// Regression: the result offers carried only the ~300-char listing summary
+// (jr-summary, cut mid-sentence) because detail pages are fetched for the
+// first listings only, and some detail pages have no JobPosting JSON-LD even
+// though the server-rendered "The posting" section is there.
+const GH_LIST_CARD = (href, title, company, city, summary) =>
+  '<article class="jr"><div class="jr-main"><h2 class="jr-title"><a class="jr-link" href="' + href + '"><span lang="en">' + title + '</span></a></h2>' +
+  '<p class="jr-meta"><span class="jr-fact jr-company"><bdi>' + company + '</bdi></span><span class="jr-fact"><span>' + city + '</span></span></p>' +
+  '<p class="jr-summary" lang="en">' + summary + '</p>' +
+  '</div><div class="jr-facts"><span class="jr-posted"><span class="num">13 Oct</span></span></div></article>';
+const GH_PROSE = 'Role details from the employer posting. ' + 'The engineer designs, builds and operates the platform core services, ' +
+  'leads delivery across squads and drives the certification programme for radio modules in scope. ' +
+  'Requirements include ten years of experience, SQL, agile practices and strong stakeholder communication skills across regions.';
+const ghDetailJsonLd = (desc) => '<html><head><script type="application/ld+json">{"@type":"JobPosting","title":"x","description":"' + desc + '"}</script></head><body></body></html>';
+const ghDetailProse = () => '<html><body><section class="jd-section jd-posting" aria-labelledby="posting-1"><h2 class="jd-eyebrow">The posting</h2>' +
+  '<p class="jd-machine">As published on example.com.</p><div class="jd-prose" lang="en" dir="ltr"><p>' + GH_PROSE + '</p><p>Second paragraph.</p></div></section></body></html>';
+const GH_SUMMARY_A = 'Nokia is hiring a Senior Software Engineer in Dubai to work on packet core network functions and cloud native deployments, including integration testing and vendor coordination across the release train.';
+const GH_SUMMARY_B = 'Ericsson seeks a DevOps Engineer in Abu Dhabi to automate CI/CD pipelines, manage Kubernetes clusters and support monitoring of production systems for its managed services customers.';
+const GH_SUMMARY_C = 'Thuraya hires a Satellite Ground Segment Engineer in Dubai specialising on gateway operations, RF link budgets and antenna tracking systems for L and S band services.';
+
+test('parseGulfhirePosting: JSON-LD description wins, jd-prose fallback, none -> empty', () => {
+  const ld = s.parseGulfhirePosting(ghDetailJsonLd('<p>' + GH_PROSE + '</p>'));
+  assert.ok(ld.includes('employer posting.') && ld.length > 300, 'JSON-LD path returns the full text');
+  const prose = s.parseGulfhirePosting(ghDetailProse());
+  assert.ok(prose.includes('Second paragraph.') && prose.length > 300, 'jd-prose fallback when there is no JSON-LD');
+  const none = s.parseGulfhirePosting('<section class="jd-section jd-lead"><h2 class="jd-eyebrow">Summary</h2><p class="jd-summary">Only a summary here, ' + GH_SUMMARY_A + '</p></section>');
+  assert.strictEqual(none, '', 'no posting description -> empty string (caller keeps the summary)');
+});
+
+test('fetchGulfhireOffers: detail pages carry the full posting, summary kept when there is none', async () => {
+  const listing = '<html><main>' +
+    GH_LIST_CARD('/jobs/a-dubai-aaa', 'Senior Software Engineer - Core', 'Nokia', 'Dubai', GH_SUMMARY_A) +
+    GH_LIST_CARD('/jobs/b-abu-dhabi-bbb', 'DevOps Engineer', 'Ericsson', 'Abu Dhabi', GH_SUMMARY_B) +
+    GH_LIST_CARD('/jobs/c-dubai-ccc', 'Ground Segment Engineer', 'Thuraya', 'Dubai', GH_SUMMARY_C) +
+    '</main></html>';
+  const pages = {
+    'https://gulfhire.com/jobs/a-dubai-aaa': ghDetailJsonLd('<p>' + GH_PROSE + '</p>'),       // JSON-LD full text
+    'https://gulfhire.com/jobs/b-abu-dhabi-bbb': ghDetailProse(),                             // prose fallback (no JSON-LD)
+    'https://gulfhire.com/jobs/c-dubai-ccc': '<p class="jd-machine">The original posting has no description.</p>' // nothing to read
+  };
+  const src = s.JOB_SOURCES.find((x) => x.id === 'gulfhire');
+  const offers = await src.fetchOffers(src, { keywords: 'engineer', location: 'Dubai' }, {
+    getText: async (u) => (u.includes('/jobs?q=') ? listing : (pages[u] != null ? pages[u] : Promise.reject(new Error('404')))),
+    delay: 0
+  });
+  const byUrl = new Map(offers.map((o) => [o.url, o]));
+  assert.strictEqual(byUrl.get('https://gulfhire.com/jobs/a-dubai-aaa').description, s.parseGulfhirePosting(ghDetailJsonLd('<p>' + GH_PROSE + '</p>')), 'JSON-LD detail text');
+  assert.ok(byUrl.get('https://gulfhire.com/jobs/b-abu-dhabi-bbb').description.includes('Second paragraph.'), 'prose fallback used when JSON-LD is absent');
+  assert.strictEqual(byUrl.get('https://gulfhire.com/jobs/c-dubai-ccc').description, GH_SUMMARY_C, 'summary kept when the posting has no description');
+});
+
+test('jobEnrichResults: short GulfHire results get the full posting, rich ones are left alone', async () => {
+  const full = s.parseGulfhirePosting(ghDetailJsonLd('<p>' + GH_PROSE + '</p>'));
+  const offers = [
+    { source: 'gulfhire', url: 'https://gulfhire.com/jobs/a', description: GH_SUMMARY_A },
+    { source: 'gulfhire', url: 'https://gulfhire.com/jobs/rich', description: 'x'.repeat(1500) }, // already full -> no fetch
+    { source: 'arbeitnow', url: 'https://a.example/j', description: GH_SUMMARY_B },               // other source -> no fetch
+    { source: 'gulfhire', url: 'https://gulfhire.com/jobs/dead', description: GH_SUMMARY_C }      // fetch fails -> summary kept
+  ];
+  let calls = 0;
+  await s.jobEnrichResults(offers, 0, async (u) => {
+    calls++;
+    assert.ok(u === 'https://gulfhire.com/jobs/a' || u === 'https://gulfhire.com/jobs/dead', 'only short gulfhire offers are fetched');
+    if (u.includes('dead')) throw new Error('HTTP 500');
+    return ghDetailJsonLd('<p>' + GH_PROSE + '</p>');
+  });
+  assert.strictEqual(calls, 2, 'exactly the two short gulfhire offers were refetched');
+  assert.strictEqual(offers[0].description, full, 'summary replaced by the full posting');
+  assert.strictEqual(offers[1].description, 'x'.repeat(1500), 'rich description untouched');
+  assert.strictEqual(offers[2].description, GH_SUMMARY_B, 'non-gulfhire source untouched');
+  assert.strictEqual(offers[3].description, GH_SUMMARY_C, 'failed fetch keeps the summary');
 });

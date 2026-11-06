@@ -51,13 +51,18 @@
     .conv-tags .pct-low { color: #a12b2b; border-color: #efc4c4; background: #fdf3f3; }
     .conv-tags .de { color: #8a6100; border-color: #e8d18a; background: #fdf8e2; }
     .conv-tags .na { color: #a12b2b; border-color: #efc4c4; background: #fdf3f3; }
-.conv-tags .ap { color: #1e7e34; border-color: #b7dfc2; background: #f0faf2; }
 .conv-tags .ta { color: #6d28d9; border-color: #ddd6fe; background: #f5f3ff; }
+.conv-tags .ap { color: #1e7e34; border-color: #b7dfc2; background: #f0faf2; }
+.conv-tags .in { color: #155e75; border-color: #a5d8e8; background: #f0f9fd; }
+.conv-tags .rj { color: #a12b2b; border-color: #efc4c4; background: #fdf3f3; }
 .conv-tags .sat { color: #155e75; border-color: #a5d8e8; background: #f0f9fd; }
 .conv-tags .sat-low { color: #a12b2b; border-color: #efc4c4; background: #fdf3f3; }
 .metrics-table .ta { color: #6d28d9; border-color: #ddd6fe; background: #f5f3ff; }
 .metrics-table .na { color: #a12b2b; border-color: #efc4c4; background: #fdf3f3; }
 .metrics-table .ap { color: #1e7e34; border-color: #b7dfc2; background: #f0faf2; }
+.metrics-table .in { color: #155e75; border-color: #a5d8e8; background: #f0f9fd; }
+.metrics-table .rj { color: #a12b2b; border-color: #efc4c4; background: #fdf3f3; }
+.metrics-table .ex { color: #6b7280; border-color: #d6dbe1; background: #f3f4f6; }
 .metrics-table td.st-cell { cursor: pointer; }
 .metrics-table td.st-cell:hover { background: #f0f7ff; }
 .metrics-table td.st-cell .conv-tag { pointer-events: none; }
@@ -242,6 +247,15 @@
       resize: none;
     }
     .input-bar .btn { align-self: flex-end; height: 44px; }
+    .input-bar textarea.bigger {
+      height: 45vh;
+      max-height: none;
+    }
+    .input-bar #expandInput.active {
+      background: #155e75;
+      border-color: #155e75;
+      color: #fff;
+    }
     .empty { color: #7b8794; text-align: center; margin-top: 40px; font-size: 14px; }
     .typing { color: #7b8794; font-style: italic; }
     .overlay {
@@ -460,6 +474,8 @@
       <div id="convFilterBar" style="display:flex; gap:6px; margin-bottom:8px">
         <button class="filter-chip" data-status="to_apply" title="Show only conversations tagged 'to apply'">to apply</button>
         <button class="filter-chip" data-status="applied" title="Show only conversations tagged 'applied'">applied</button>
+        <button class="filter-chip" data-status="interview" title="Show only conversations tagged 'interview'">interview</button>
+        <button class="filter-chip" data-status="rejected" title="Show only conversations tagged 'rejected'">rejected</button>
         <button class="filter-chip" data-status="not_applying" title="Show only conversations tagged 'not applying'">not applying</button>
       </div>
       <div id="convList"></div>
@@ -528,6 +544,7 @@
       <span id="ctxSize" class="ctx-size" title="Estimated context size (system prompt + RAG files + conversation)">ctx: –</span>
       <textarea id="userInput" placeholder="Describe the job offer..."></textarea>
       <button class="btn" id="sendBtn">Send</button>
+      <button class="btn secondary" id="expandInput" title="Enlarge / shrink input field">⤢</button>
     </div>
   </main>
 
@@ -643,6 +660,8 @@
           <button class="filter-chip" data-js-src="stepstone" title="Stepstone (DE) — scraped listing + JSON-LD, ~25s">stepstone (DE)</button>
           <button class="filter-chip" data-js-src="nofluffjobs" title="NoFluffJobs (PL/remote) — scraped listing + JSON-LD, ~15s">nofluffjobs (PL)</button>
           <button class="filter-chip" data-js-src="pracuj" title="pracuj.pl (PL) — currently blocked by Cloudflare from the server; usually fails">pracuj.pl (PL)</button>
+          <button class="filter-chip" data-js-src="rocketjobs" title="RocketJobs (PL) — listing ?keyword= (offer URLs from the JSON-LD ItemList) + JSON-LD details, ~10-20s; keyword words are ANDed">rocketjobs (PL)</button>
+          <button class="filter-chip" data-js-src="remotelyde" title="remotely.de (DE/remote) — sitemap-jobs.xml slugs (company+title) scored locally, JobPosting JSON-LD details, ~20s">remotely.de (DE)</button>
           <button class="filter-chip" data-js-src="gulfhire" title="GulfHire (UAE/Qatar/Saudi/Kuwait/Bahrain/Oman) — server-rendered listing + JSON-LD, ~20s">gulfhire (UAE/Gulf)</button>
           <button class="filter-chip" data-js-src="linkedin" title="LinkedIn public search — works for Dubai/Abu Dhabi and any other location, ~25s">linkedin (UAE/any)</button>
           <button class="filter-chip" data-js-src="sample" title="Built-in offline sample — no network, for demo/testing">sample (offline)</button>
@@ -690,6 +709,12 @@
           </select>
           <button class="btn secondary" id="metricsClose">&#x2715;</button>
         </div>
+      </div>
+      <div style="display:flex; gap:6px; align-items:center; padding:8px 16px 0; flex-wrap:wrap" id="metricsFilterBar">
+        <span style="font-size:11px; color:#6b7280; text-transform:uppercase; letter-spacing:.03em">Hide</span>
+        <button class="filter-chip" data-mhide="applied" title="Hide offers tagged 'applied' (application already sent)">applied</button>
+        <button class="filter-chip" data-mhide="not_applying" title="Hide offers tagged 'not applying' (skipped)">skipped</button>
+        <button class="filter-chip" data-mhide="expired" title="Hide offers tagged 'expired'">expired</button>
       </div>
       <div class="overlay-body" id="metricsBody" style="white-space:normal; max-height:520px; overflow:auto"></div>
       <div class="overlay-foot">
@@ -758,8 +783,14 @@
           <option value="">— not set —</option>
           <option value="to_apply">To apply</option>
           <option value="applied">Applied (application sent)</option>
+          <option value="interview">Interview (advanced to the interview stage)</option>
+          <option value="rejected">Rejected</option>
           <option value="not_applying">Not applying (skipping this offer)</option>
         </select>
+        <label class="checkline" style="display:flex; align-items:center; gap:8px; cursor:pointer">
+          <input type="checkbox" id="tagExpired" style="width:auto" />
+          <span>Offer expired <span style="color:#9aa5b1">(posting closed, no longer available)</span></span>
+        </label>
       </div>
       <div class="overlay-foot">
         <button class="btn secondary" id="tagSuggest">Suggest from content</button>
@@ -1298,6 +1329,18 @@ let streamingActive = false; // a model response is being streamed
           b.textContent = 'applied';
           b.title = 'Application sent';
           tagsRow.appendChild(b);
+        } else if (st === 'interview') {
+          const b = document.createElement('span');
+          b.className = 'conv-tag in';
+          b.textContent = 'interview';
+          b.title = 'Advanced to the interview stage';
+          tagsRow.appendChild(b);
+        } else if (st === 'rejected') {
+          const b = document.createElement('span');
+          b.className = 'conv-tag rj';
+          b.textContent = 'rejected';
+          b.title = 'Application rejected';
+          tagsRow.appendChild(b);
         } else if (st === 'not_applying') {
           const b = document.createElement('span');
           b.className = 'conv-tag na';
@@ -1347,6 +1390,7 @@ let streamingActive = false; // a model response is being streamed
     const tagSatEl = document.getElementById('tagSat');
     const tagGermanEl = document.getElementById('tagGerman');
     const tagStatusEl = document.getElementById('tagStatus');
+    const tagExpiredEl = document.getElementById('tagExpired');
     let tagEditingId = null;
 
     function openTagEditor(c) {
@@ -1357,6 +1401,7 @@ let streamingActive = false; // a model response is being streamed
       tagSatEl.value = (t.satisfactionPct !== null && t.satisfactionPct !== undefined) ? t.satisfactionPct : '';
       tagGermanEl.value = t.german || '';
       tagStatusEl.value = t.status || (t.applied ? 'applied' : (t.notApplying ? 'not_applying' : ''));
+      tagExpiredEl.checked = !!t.expired;
       tagOverlay.classList.add('show');
     }
     function closeTagEditor() {
@@ -1518,6 +1563,7 @@ let streamingActive = false; // a model response is being streamed
           if (s.matchPct !== null && s.matchPct !== undefined) tagPctEl.value = s.matchPct;
           if (s.german) tagGermanEl.value = s.german;
           tagStatusEl.value = s.status || '';
+          if (s.expired) tagExpiredEl.checked = true;
         }
       } finally {
         btn.disabled = false;
@@ -1530,7 +1576,8 @@ let streamingActive = false; // a model response is being streamed
         matchPct: pctRaw === '' ? null : parseInt(pctRaw, 10),
         satisfactionPct: tagSatEl.value.trim() === '' ? null : parseInt(tagSatEl.value, 10),
         german: tagGermanEl.value || null,
-        status: tagStatusEl.value || null
+        status: tagStatusEl.value || null,
+        expired: tagExpiredEl.checked
       };
       const res = await fetch('/api/conversations/' + tagEditingId + '/tags', {
         method: 'POST',
@@ -2263,6 +2310,16 @@ let streamingActive = false; // a model response is being streamed
     });
 
     sendBtn.addEventListener('click', send);
+    const expandInputBtn = document.getElementById('expandInput');
+    try { if (localStorage.getItem('gem_bigger_input') === '1') userInput.classList.add('bigger'); } catch (_) {}
+    const syncExpandBtn = () => expandInputBtn.classList.toggle('active', userInput.classList.contains('bigger'));
+    syncExpandBtn();
+    expandInputBtn.addEventListener('click', () => {
+      const on = userInput.classList.toggle('bigger');
+      try { localStorage.setItem('gem_bigger_input', on ? '1' : '0'); } catch (_) {}
+      syncExpandBtn();
+      userInput.focus();
+    });
     userInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -3070,6 +3127,15 @@ let streamingActive = false; // a model response is being streamed
     const metricsSortMeta = document.getElementById('metricsSortMeta');
     let metricsEntries = [];
     let metricsSortKey = 'recommend';
+    const metricsHide = { applied: false, not_applying: false, expired: false };
+    document.querySelectorAll('#metricsFilterBar .filter-chip').forEach((b) => {
+      b.addEventListener('click', () => {
+        const k = b.getAttribute('data-mhide');
+        metricsHide[k] = !metricsHide[k];
+        b.classList.toggle('active', metricsHide[k]);
+        renderMetrics();
+      });
+    });
     const METRICS_SORT_LABELS = {
       recommend: 'Recommendation', interview: 'Interview chance', employment: 'Employment chance',
       role: 'Role fit', satisfaction: 'Satisfaction', salary: 'Salary', company: 'Company',
@@ -3103,7 +3169,7 @@ let streamingActive = false; // a model response is being streamed
           return bn - an;
         });
       } else if (key === 'status') {
-        const rank = { applied: 0, to_apply: 1, not_applying: 2 };
+        const rank = { interview: 0, applied: 1, to_apply: 2, rejected: 3, not_applying: 4 };
         const rk = (s) => (rank[s] !== undefined ? rank[s] : 3);
         arr.sort((a, b) => rk(a.status) - rk(b.status));
       } else if (key === 'date') {
@@ -3115,27 +3181,38 @@ let streamingActive = false; // a model response is being streamed
     }
     function renderMetrics() {
       metricsBody.innerHTML = '';
+      const anyHide = metricsHide.applied || metricsHide.not_applying || metricsHide.expired;
+      const visible = sortedMetrics().filter((e) => !(
+        (metricsHide.applied && e.status === 'applied') ||
+        (metricsHide.not_applying && e.status === 'not_applying') ||
+        (metricsHide.expired && e.expired)
+      ));
       if (metricsEntries.length) {
         const suffix = ['recommend', 'interview', 'employment', 'role', 'satisfaction', 'salary'].includes(metricsSortKey)
           ? ' (best first)'
           : (metricsSortKey === 'date' ? ' (newest first)'
-            : (metricsSortKey === 'status' ? ' (applied \u2192 to apply \u2192 not applying)' : ' (A-Z)'));
-        metricsSortMeta.textContent = 'Sorted by "' + (METRICS_SORT_LABELS[metricsSortKey] || metricsSortKey) + '"' + suffix;
+            : (metricsSortKey === 'status' ? ' (interview \u2192 applied \u2192 to apply \u2192 rejected \u2192 not applying)' : ' (A-Z)'));
+        metricsSortMeta.textContent = 'Showing ' + visible.length + ' of ' + metricsEntries.length
+          + ' \u00b7 Sorted by "' + (METRICS_SORT_LABELS[metricsSortKey] || metricsSortKey) + '"' + suffix;
       }
       if (!metricsEntries.length) {
         metricsBody.innerHTML = '<div class="status">No metrics saved yet. Run "Bulk analysis" first.</div>';
         return;
       }
+      if (!visible.length) {
+        metricsBody.innerHTML = '<div class="status">All entries are hidden by the active filters.</div>';
+        return;
+      }
       const tbl = document.createElement('table');
       tbl.className = 'metrics-table';
       const thead = document.createElement('thead');
-      thead.innerHTML = '<tr><th>Recommend</th><th>Company</th><th>Position</th><th>Status</th><th>Interview</th><th>Employment</th><th>Role</th><th>Satisf.</th><th>Salary</th><th>Date</th><th>Conversation</th></tr>';
+      thead.innerHTML = '<tr><th>Recommend</th><th>Company</th><th>Position</th><th>Status</th><th>Exp.</th><th>Interview</th><th>Employment</th><th>Role</th><th>Satisf.</th><th>Salary</th><th>Date</th><th>Conversation</th></tr>';
       tbl.appendChild(thead);
       const tbody = document.createElement('tbody');
-      const statusLabels = { to_apply: 'to apply', applied: 'applied', not_applying: 'not applying' };
-      const statusColors = { to_apply: 'ta', applied: 'ap', not_applying: 'na' };
-      const statusCycle = [null, 'to_apply', 'not_applying'];
-      sortedMetrics().forEach((e) => {
+      const statusLabels = { to_apply: 'to apply', applied: 'applied', not_applying: 'not applying', rejected: 'rejected', interview: 'interview' };
+      const statusColors = { to_apply: 'ta', applied: 'ap', not_applying: 'na', rejected: 'rj', interview: 'in' };
+      const statusCycle = [null, 'to_apply', 'applied', 'interview', 'rejected', 'not_applying'];
+      visible.forEach((e) => {
         const m = e.metrics || {};
         const tr = document.createElement('tr');
         tr.className = 'clickable';
@@ -3156,7 +3233,7 @@ let streamingActive = false; // a model response is being streamed
         // Status cell: click cycles to apply -> not applying -> clear (saved via /tags)
         const stTd = tr.children[3];
         stTd.className = 'st-cell';
-        stTd.title = 'Click: tag "to apply" \u2192 "not applying" \u2192 clear';
+        stTd.title = 'Click: cycle the status tag (to apply \u2192 applied \u2192 interview \u2192 rejected \u2192 not applying \u2192 clear)';
         const renderBadge = (st) => {
           stTd.innerHTML = '';
           const badge = document.createElement('span');
@@ -3182,6 +3259,35 @@ let streamingActive = false; // a model response is being streamed
             alert('Failed to set status.');
           }
         });
+        // Expired cell: click toggles the 'expired' tag (saved via /tags)
+        const expTd = document.createElement('td');
+        expTd.className = 'st-cell';
+        expTd.title = 'Click: mark the posting as expired \u2192 click again to clear';
+        const renderExp = (is) => {
+          expTd.innerHTML = '';
+          const badge = document.createElement('span');
+          badge.className = 'conv-tag' + (is ? ' ex' : '');
+          badge.textContent = is ? 'expired' : '+ exp';
+          expTd.appendChild(badge);
+        };
+        renderExp(!!e.expired);
+        expTd.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          const next = !e.expired;
+          try {
+            const r = await fetch('/api/conversations/' + e.convId + '/tags', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ expired: next })
+            });
+            if (!r.ok) throw new Error(r.status);
+            e.expired = next;
+            renderExp(next);
+          } catch (_) {
+            alert('Failed to set the expired tag.');
+          }
+        });
+        tr.insertBefore(expTd, tr.children[4]); // Exp. column sits right after Status
         tr.addEventListener('click', async () => {
           metricsOverlay.classList.remove('show');
           await loadConversation(e.convId);

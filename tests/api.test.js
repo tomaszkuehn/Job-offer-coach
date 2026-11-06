@@ -129,12 +129,33 @@ test('POST /api/conversations/:id/tags syncs metrics status', async () => {
   const m = await (await fetch(BASE + '/api/metrics')).json();
   const entry = m.entries.find((e) => e.convId === 'testconv000001');
   assert.strictEqual(entry.status, 'applied');
+  assert.strictEqual(entry.expired, false, 'no expired tag yet');
   // Invalid status is rejected.
   const bad = await fetch(BASE + '/api/conversations/testconv000001/tags', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status: 'nope' })
   });
   assert.strictEqual(bad.status, 400);
+});
+
+test('POST /api/conversations/:id/tags accepts expired and syncs metrics', async () => {
+  const r = await fetch(BASE + '/api/conversations/testconv000001/tags', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expired: true })
+  });
+  assert.strictEqual(r.status, 200);
+  const tags = (await r.json()).tags;
+  assert.strictEqual(tags.expired, true);
+  assert.strictEqual(tags.status, 'applied', 'status preserved when only expired is sent');
+  const m = await (await fetch(BASE + '/api/metrics')).json();
+  const entry = m.entries.find((e) => e.convId === 'testconv000001');
+  assert.strictEqual(entry.expired, true);
+  // Clearing works too.
+  const off = await fetch(BASE + '/api/conversations/testconv000001/tags', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expired: false })
+  });
+  assert.strictEqual((await off.json()).tags.expired, false);
 });
 
 test('POST /api/bulk/refresh re-flags offers against sandbox conversations', async () => {

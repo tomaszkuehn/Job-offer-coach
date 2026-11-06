@@ -663,6 +663,7 @@ app.post('/api/conversations', (req, res) => {
         location: (existing && existing.location) || meta.location || '',
         url: (existing && existing.url) || meta.url || '',
         status: (conv.tags && conv.tags.status) || (existing ? existing.status : '') || '',
+        expired: !!((conv.tags && conv.tags.expired) || (existing && existing.expired)),
         metrics: met.metrics,
         raw: met.raw
       };
@@ -701,7 +702,7 @@ function analyzeConversationTags(conv) {
   const allTexts = [...assistantTexts].reverse();
   const joined = allTexts.join('\n');
 
-  const tags = { matchPct: null, german: null, status: null, satisfactionPct: null };
+  const tags = { matchPct: null, german: null, status: null, satisfactionPct: null, expired: false };
 
   // Match %: first message (newest first) that states an interview chance.
   for (const text of allTexts) {
@@ -726,8 +727,25 @@ function analyzeConversationTags(conv) {
   }
 
   // Applied: explicit statements that an application was sent.
-  if (/(?:wys[\wa\u0142]{0,7}\s+aplikacj)|(?:za)?aplikowa[\wa\u0142]{0,4}\s+(?:juz|na\s+ta|na\s+to)|(?:sent|submitted)\s+(?:my|the)\s+application|applied\s+(?:already|today|yesterday|via|on|through)/i.test(joined)) {
+  const appliedRe = /(?:wys[\wa\u0142]{0,7}\s+aplikacj)|(?:za)?aplikowa[\wa\u0142]{0,4}\s+(?:juz|na\s+ta|na\s+to)|(?:sent|submitted)\s+(?:my|the)\s+application|applied\s+(?:already|today|yesterday|via|on|through)|(?:application|aplikacj\w*)\w*[^\n]{0,40}?(?:has\s+been\s+|was\s+|zosta\w*\s+)?sent/i;
+
+  // Rejected: an explicit rejection (a negative outcome beats "applied").
+  const rejectedRe = /(?:rejektion|rejection)\s*(?:mail|letter|email|reply|message)?|aplikacj\w*[^\n]{0,30}(?:odrzucon|odmow|negativ\w*\s*odpowied)|odrzucon\w*[^\n]{0,20}(?:aplikacj|ofert\w*)|(?:application|candidacy|profile)\w*\s+(?:was|has\s+been|got|were)\s+rejected|unfortunately[^\n]{0,40}(?:rejected|not\s+be\s+moving|will\s+not\s+be\s+moving|decided\s+not\s+to\s+move)/i;
+
+  // Interview: the process advanced to an interview stage.
+  const interviewRe = /(?:zaproszen\w*[^\n]{0,30}(?:rozmow|interview))|(?:rozmow\w*[^\n]{0,20}(?:zapros|umowion|zaplanowan|odbed)|zaprosil[^\n]{0,30}(?:na\s+)?(?:rozmow|interview)|(?:interview|rozmowa[^\n]{0,10}kwalifikacyjn\w*)[^\n]{0,20}(?:invitation|invitation|zapros)|got\s+(?:an\s+)?interview|interview\s+(?:invitation|is\s+scheduled|scheduled|booked)|(?:move|moving|proceed|advanc)\w*[^\n]{0,30}(?:to\s+)?(?:the\s+)?interview)/i;
+
+  if (rejectedRe.test(joined)) tags.status = 'rejected';
+  else if (interviewRe.test(joined)) tags.status = 'interview';
+  else if (appliedRe.test(joined)) {
     if (tags.status !== 'not_applying') tags.status = 'applied';
+  }
+
+  // Expired: explicit statements that the posting/offer is no longer active.
+  // Only conservative phrasings count ("przeterminowana", "wygasła oferta" —
+  // not a generic "the deadline is close").
+  if (/(?:ofert\w*[^\n]{0,20}?wygas|wygas\w*[^\n]{0,20}?ofert|(?:og\u0142oszen|ogloszen)\w*[^\n]{0,20}?wygas|przeterminowan\w*|(?:posting|offer|application|position|vacancy)[\w\s]{0,20}?(?:has\s+been\s+|is\s+)?(?:closed|expired|no\s+longer\s+available)|position\s+(?:has\s+been\s+)?filled)/i.test(joined)) {
+    tags.expired = true;
   }
   return tags;
 }
@@ -751,7 +769,7 @@ function normalizeTagsInput(body) {
     else if (['required', 'not_required'].includes(body.german)) out.german = body.german;
     else return null;
   }
-  const STATUS_VALUES = ['to_apply', 'applied', 'not_applying'];
+  const STATUS_VALUES = ['to_apply', 'applied', 'not_applying', 'rejected', 'interview'];
   if (body.status !== undefined) {
     if (body.status === null || body.status === '') out.status = null;
     else if (STATUS_VALUES.includes(body.status)) out.status = body.status;
@@ -760,6 +778,7 @@ function normalizeTagsInput(body) {
     // legacy boolean payload
     out.status = body.applied ? 'applied' : (body.notApplying ? 'not_applying' : null);
   }
+  if (body.expired !== undefined) out.expired = !!body.expired;
   return out;
 }
 
@@ -777,6 +796,7 @@ app.post('/api/conversations/:id/tags', (req, res) => {
     status: patch.status !== undefined ? patch.status : (conv.tags ? (conv.tags.status !== undefined ? conv.tags.status : (conv.tags.applied ? 'applied' : (conv.tags.notApplying ? 'not_applying' : null))) : null),
     // auto-filled from METRYKA (bulk analysis); preserved unless explicitly sent
     satisfactionPct: patch.satisfactionPct !== undefined ? patch.satisfactionPct : (conv.tags && conv.tags.satisfactionPct !== undefined ? conv.tags.satisfactionPct : null),
+    expired: patch.expired !== undefined ? !!patch.expired : !!(conv.tags && conv.tags.expired),
     manual: true
   };
   conv.tags = tags;
@@ -793,6 +813,7 @@ app.post('/api/conversations/:id/tags', (req, res) => {
   const mentry = mstore.entries.find((en) => en.convId === id);
   if (mentry) {
     mentry.status = tags.status || '';
+    mentry.expired = !!tags.expired;
     mentry.tags = tags;
     saveMetrics(mstore);
   }
@@ -918,6 +939,12 @@ function extractPackageMessage(content, ownerName) {
   const isOwnerH1 = (h) => h.level === 1 && RE_CV_H1.test(h.norm);
   const isBareOwnerH1 = (h, i, all) => {
     if (!isOwnerH1(h)) return false;
+    // Sender block: an owner H1 DIRECTLY after a cover-letter heading is the
+    // letter's sender line ("## Cover Letter (EN)" -> "**TOMASZ KUEHN**"),
+    // kept inside the letter — not a document boundary
+    // (observed: "Senior embedded Bremen" made the letter body empty).
+    const prev = all[i - 1];
+    if (prev && isClStart(prev)) return true;
     const nxt = all[i + 1];
     return !nxt || isClStart(nxt) || isNumberedH2(nxt);
   };
@@ -1777,6 +1804,32 @@ function parseGulfhireListing(html, base) {
   return out;
 }
 
+// GulfHire detail page -> the COMPLETE posting text. The page carries the
+// full description twice: as a schema.org JobPosting JSON-LD block and as the
+// server-rendered "The posting" section (div.jd-prose). Some postings have no
+// description at all (GulfHire then shows only its own auto-summary) — the
+// call keeps its listing summary instead.
+function parseGulfhirePosting(detailHtml) {
+  const html = String(detailHtml || '');
+  const jp = parseJsonLdJobPostings(html)[0];
+  if (jp) {
+    const d = offerHtmlToText(jp.description);
+    if (d.length >= 100) return d;
+  }
+  const sIdx = html.indexOf('<section class="jd-section jd-posting"');
+  if (sIdx !== -1) {
+    const pIdx = html.indexOf('<div class="jd-prose"', sIdx);
+    if (pIdx !== -1) {
+      const eIdx = html.indexOf('</section>', pIdx);
+      if (eIdx !== -1) {
+        const d = offerHtmlToText(html.slice(pIdx, eIdx));
+        if (d.length >= 100) return d;
+      }
+    }
+  }
+  return '';
+}
+
 // LinkedIn public search cards (guest endpoint): title, company, location,
 // posting date, job id.
 function parseLinkedinGuestCards(html) {
@@ -1855,17 +1908,59 @@ async function fetchGulfhireOffers(src, criteria, ctx) {
     try {
       const detail = await ctx.getText(offers[i].url);
       const jp = parseJsonLdJobPostings(detail)[0];
-      if (!jp) continue;
-      const n = normalizeJsonLdOffer(jp, src.id, offers[i].url);
-      if (!n) continue;
-      offers[i].description = n.description;
-      if (n.company) offers[i].company = n.company;
-      if (n.location) offers[i].location = n.location.replace(/,\s*AE\b/, ', United Arab Emirates');
-      if (n.savedAt) offers[i].savedAt = n.savedAt;
-      if (n.salary) offers[i].salary = n.salary;
+      const n = jp ? normalizeJsonLdOffer(jp, src.id, offers[i].url) : null;
+      // parseGulfhirePosting also handles pages whose JSON-LD description is
+      // missing or too short — the rendered "The posting" section is the
+      // fallback. Neither present -> keep the listing summary.
+      const full = parseGulfhirePosting(detail);
+      if (full && (!n || full.length >= n.description.length)) offers[i].description = full;
+      else if (n) offers[i].description = n.description;
+      if (n) {
+        if (n.company) offers[i].company = n.company;
+        if (n.location) offers[i].location = n.location.replace(/,\s*AE\b/, ', United Arab Emirates');
+        if (n.savedAt) offers[i].savedAt = n.savedAt;
+        if (n.salary) offers[i].salary = n.salary;
+      }
     } catch (_) { /* one bad detail must not kill the source */ }
   }
   return offers.filter((o) => o.description && o.description.length >= 100);
+}
+
+// remotely.de (Germany/remote): the on-page search is client-side React, but
+// the whole corpus (12k+) is server-rendered detail pages listed in
+// sitemap-jobs.xml with <company>-<title>-mwd slugs. So: score the slugs
+// against the keywords, fetch the top detail pages and read their
+// job-posting-jsonld JobPosting block (description, employer, address).
+async function fetchRemotelyDeOffers(src, criteria, ctx) {
+  let xml = '';
+  try { xml = await ctx.getText('https://www.remotely.de/sitemap-jobs.xml'); } catch (_) { return []; }
+  const urls = [...new Set(String(xml).match(/https:\/\/www\.remotely\.de\/job\/[a-z0-9][a-z0-9-]+/g) || [])];
+  if (!urls.length) return [];
+  const kws = String(criteria.keywords || '').toLowerCase().split(/\s+/).filter((w) => w.length >= 2);
+  if (!kws.length) kws.push('software', 'engineer');
+  const scored = [];
+  for (let i = 0; i < urls.length; i++) {
+    const text = urls[i].slice('https://www.remotely.de/job/'.length).replace(/-/g, ' ');
+    let hits = 0;
+    for (const k of kws) { if (text.includes(k)) hits++; }
+    if (hits) scored.push({ i, url: urls[i], hits, all: hits === kws.length });
+  }
+  // All keywords hit first, then the most hits, then the sitemap order.
+  scored.sort((a, b) => (b.all - a.all) || (b.hits - a.hits) || (a.i - b.i));
+  const offers = [];
+  for (const s of scored.slice(0, src.maxDetails || 12)) {
+    if (offers.length && ctx.delay > 0) await new Promise((r) => setTimeout(r, ctx.delay));
+    let html = '';
+    try { html = await ctx.getText(s.url); } catch (_) { continue; }
+    const jp = parseJsonLdJobPostings(html)[0];
+    if (!jp) continue;
+    const o = normalizeJsonLdOffer(jp, src.id, s.url);
+    if (o && o.description && o.description.length >= 100) {
+      o.workplace = 'remote';
+      offers.push(o);
+    }
+  }
+  return offers;
 }
 
 async function fetchLinkedinOffers(src, criteria, ctx) {
@@ -1975,6 +2070,30 @@ const JOB_SOURCES = [
     id: 'pracuj', kind: 'html', base: 'https://it.pracuj.pl', slow: 2000, maxDetails: 10,
     linkRe: '/praca/[a-z0-9][a-z0-9-]*,[a-z0-9]+;kw',
     listing: (criteria, kw) => 'https://it.pracuj.pl/praca/' + encodeURIComponent((kw || 'software').replace(/\s+/g, '-')) + ';kw'
+  },
+  {
+    // RocketJobs (PL/remote): listing is server-rendered with ?keyword= (the
+    // offer CARDS are client-rendered, but the embedded JSON-LD CollectionPage
+    // ItemList carries every result's absolute /oferta-pracy/<slug> URL) ->
+    // detail pages carry a JobPosting JSON-LD (description, employer,
+    // address, salary). The backend ANDs all keyword words.
+    id: 'rocketjobs', kind: 'html', base: 'https://rocketjobs.pl', slow: 1500, maxDetails: 10,
+    linkRe: 'https://rocketjobs\\.pl/oferta-pracy/[a-z0-9][a-z0-9-]+',
+    listing: (criteria, kw) => {
+      // "remote"/"praca zdalna" (alone) -> the remote region route; anything
+      // else (a city, a country, an empty field) -> all of Poland.
+      const remoteOnly = /^\s*(?:remote|remotely|praca\s+zdalna|zdalna|pracuj\s+zdalnie|home\s*office|homeoffice)\s*$/i.test(String(criteria.location || ''));
+      return 'https://rocketjobs.pl/oferty-pracy/' +
+        (remoteOnly ? 'praca-zdalna' : 'wszystkie-lokalizacje') +
+        '?keyword=' + encodeURIComponent(kw || 'software');
+    }
+  },
+  {
+    // remotely.de (DE/remote): on-page search is client-side, so the custom
+    // fetcher scores the sitemap-jobs.xml slugs (<company>-<title>-mwd) and
+    // pulls the JobPosting JSON-LD from the top detail pages.
+    id: 'remotelyde', base: 'https://www.remotely.de', slow: 1200, maxDetails: 12,
+    fetchOffers: fetchRemotelyDeOffers
   },
   {
     // GulfHire (UAE/Qatar/Saudi/Kuwait/Bahrain/Oman): server-rendered listing
@@ -2355,6 +2474,28 @@ function jobSourcesFrom(criteria) {
   return JOB_SOURCES.filter((s) => sel.includes(s.id));
 }
 
+// The final result set must carry the COMPLETE posting, not the listing
+// summary. GulfHire fetches detail pages for the first few listings only —
+// any matched offer beyond that keeps its trimmed summary — so after the AI
+// run every short-description GulfHire result is re-fetched once and the
+// summary is replaced by the full "The posting" text (when the posting has
+// one). Other sources deliver full descriptions already.
+async function jobEnrichResults(offers, delayMs, getText) {
+  const getTextFn = getText || jobGetText;
+  let fetched = 0;
+  for (const o of offers) {
+    if (!o || o.source !== 'gulfhire' || !o.url) continue;
+    if (String(o.description || '').length >= 1500) continue; // already a full posting
+    if (fetched > 0 && delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+    fetched++;
+    try {
+      const full = parseGulfhirePosting(await getTextFn(o.url));
+      if (full && full.length > String(o.description || '').length) o.description = full;
+    } catch (_) { /* keep the summary when the detail page is unreachable */ }
+  }
+  return offers;
+}
+
 // Short-lived in-memory cache of harvested candidates, keyed by a search id, so
 // the approval round-trip only carries the prompts (not the full descriptions).
 const JOB_CACHE_MAX = 8;
@@ -2429,6 +2570,7 @@ app.post('/api/job-search/run', async (req, res) => {
   send({ event: 'start', phase: 'run', batches: batches.length });
   const { aiByBatch, anyAi } = await jobRunAiBatches(batches, modelIndex, delayMs, send);
   const offers = jobComposeOffers(batches, aiByBatch, anyAi);
+  await jobEnrichResults(offers, Math.max(delayMs, 800));
   flagStoredOffers(offers);
   send({ event: 'done', offers, aiChecked: anyAi, total: offers.length });
   res.end();
@@ -2450,6 +2592,7 @@ app.post('/api/job-search', async (req, res) => {
   const batches = jobBuildBatches(candidates, criteria);
   const { aiByBatch, anyAi } = await jobRunAiBatches(batches, modelIndex, delayMs, send);
   const offers = jobComposeOffers(batches, aiByBatch, anyAi);
+  await jobEnrichResults(offers, Math.max(delayMs, 800));
   flagStoredOffers(offers);
   send({ event: 'done', offers, aiChecked: anyAi, total: offers.length });
   res.end();
@@ -2962,6 +3105,7 @@ if (require.main !== module) {
     extractPackageMessage,
     pickPackageParts,
     normalizeTagsInput,
+    analyzeConversationTags,
     deriveOfferMeta,
     bulkOfferTitle,
     findDuplicateOffers,
@@ -2982,6 +3126,7 @@ if (require.main !== module) {
     jsonLdSalary,
     jsonLdLocation,
     parseGulfhireListing,
+    parseGulfhirePosting,
     parseLinkedinGuestCards,
     jobGulfCity,
     jobGulfCities,
@@ -2991,6 +3136,9 @@ if (require.main !== module) {
     jobPrefilter,
     jobAiPrompt,
     parseJobAiReply,
+    jobEnrichResults,
+    jobFetchHtmlSource,
+    jobFetchSource,
     JOB_SOURCES
   };
 } else {
