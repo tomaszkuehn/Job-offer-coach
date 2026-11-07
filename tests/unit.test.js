@@ -497,6 +497,33 @@ test('fetchRemotelyDeOffers: sitemap slug scoring picks keyword hits, details re
   assert.ok(o.description.length >= 300);
 });
 
+// ---- conversation export (.md / .pdf) ----
+test('composeConversationMd: title, meta, role sections and model badges', () => {
+  const md = s.composeConversationMd({
+    name: 'ACME — Embedded',
+    messages: [
+      { role: 'user', content: 'Offer text\nwith two lines' },
+      { role: 'assistant', content: 'ANALIZA\nMETRYKA: 90%', model: 'gpt-test' },
+      { role: 'assistant', content: '' }
+    ]
+  }, '2026-11-06 10:30');
+  assert.match(md, /^# ACME — Embedded\n\nExported: 2026-11-06 10:30 · 3 messages\n/);
+  assert.match(md, /## You\n\nOffer text\nwith two lines/);
+  assert.match(md, /## Assistant — gpt-test\n\nANALIZA\nMETRYKA: 90%/);
+  assert.match(md, /## Assistant\n\n_\(empty\)_/);
+  assert.strictEqual(md.split('---').length, 4, 'one separator per message');
+});
+
+test('sanitizeChatHtml: strips scripts, handlers and dangerous tags, keeps marks', () => {
+  const out = s.sanitizeChatHtml('<p>he<b>llo</b></p><script>alert(1)</script><img src="x" onerror="evil()"><iframe src="y"></iframe>');
+  assert.ok(out.includes('<p>he<b>llo</b></p>'));
+  assert.strictEqual(out.includes('script'), false);
+  assert.strictEqual(out.includes('onerror'), false);
+  assert.strictEqual(out.includes('iframe'), false);
+  const marks = s.sanitizeChatHtml('<p>The <mark>key part is important</mark> stays.</p>');
+  assert.ok(marks.includes('<mark>key part is important</mark>'), 'highlights survive');
+});
+
 // ---- Package export part selection ----
 // Regression: "EDGE Group - Principal, Networks" — a later KATIM-form
 // message numbered "## 3. Aktualizacja CV (AXE PRIM bullet)" (an editorial

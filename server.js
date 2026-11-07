@@ -1301,6 +1301,148 @@ app.post('/api/export-package', async (req, res) => {
   res.json({ ok: true, exported, reused, outDir: resolveExportsDir() });
 });
 
+// ---- Whole-conversation export (.md / .pdf) ----
+// The .md variant is composed from the stored raw messages. The .pdf variant
+// renders what the browser shows (including the user's yellow <mark>
+// highlights, which live only in the chat DOM): the client serializes the
+// rendered message blocks and the server prints them to PDF with headless
+// Edge via playwright-core.
+
+// Pure helper (unit-tested): markdown transcript of a stored conversation.
+function composeConversationMd(conv, exportedAt) {
+  const lines = [];
+  lines.push('# ' + (conv.name || 'Conversation'));
+  lines.push('');
+  lines.push('Exported: ' + exportedAt + ' · ' + (conv.messages || []).length + ' messages');
+  for (const m of (conv.messages || [])) {
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+    lines.push(m.role === 'user' ? '## You' : '## Assistant' + (m.model ? ' — ' + m.model : ''));
+    lines.push('');
+    lines.push(String(m.content || '').trim() || '_(empty)_');
+  }
+  return lines.join('\n');
+}
+
+const PDF_BLOCK_CSS = [
+  'body { font: 10.5pt "Segoe UI", Helvetica, Arial, sans-serif; color: #1a222d; margin: 0; }',
+  '.head { margin-bottom: 18px; border-bottom: 2px solid #c9d1d9; padding-bottom: 10px; }',
+  '.head h1 { font-size: 16pt; margin: 0 0 4px; }',
+  '.head .meta { color: #7b8794; font-size: 9pt; }',
+  '.msg { margin: 0 0 16px; }',
+  '.msg-role { font-weight: 600; font-size: 8.5pt; color: #5b6672; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 5px; }',
+  '.u { white-space: pre-wrap; font-family: "Segoe UI", sans-serif; font-size: 10pt; }',
+  'h1, h2, h3 { line-height: 1.35; margin: 14px 0 6px; }',
+  'h1 { font-size: 13pt; } h2 { font-size: 11.5pt; } h3 { font-size: 10.5pt; }',
+  'p, li { line-height: 1.45; margin: 4px 0; }',
+  'ul, ol { margin: 4px 0 8px 20px; padding: 0; }',
+  'table { border-collapse: collapse; width: 100%; margin: 8px 0; }',
+  'th, td { border: 1px solid #b8bfc8; padding: 3px 7px; text-align: left; font-size: 9pt; }',
+  'th { background: #eef1f4; }',
+  'code { font: 8.5pt Consolas, monospace; background: #eef1f4; padding: 1px 3px; border-radius: 3px; }',
+  'pre { font: 8.5pt Consolas, monospace; background: #f4f6f8; border: 1px solid #d8dee4; padding: 7px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; }',
+  'pre code { background: none; padding: 0; }',
+  'blockquote { margin: 6px 0; padding: 2px 10px; border-left: 3px solid #c9d1d9; color: #4b5563; }',
+  'mark { background: #ffe94c; color: inherit; padding: 0 1px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }',
+  'hr { border: none; border-top: 1px solid #d8dee4; margin: 12px 0; }',
+  'a { color: #1158c7; text-decoration: none; overflow-wrap: anywhere; }',
+  '.model-badge { display: inline-block; font-size: 8pt; color: #4b5563; background: #eef1f4; border-radius: 3px; padding: 1px 5px; }'
+].join('\n');
+
+// Strip anything the print document must never carry (the HTML comes from the
+// client-side chat DOM — rendered markdown plus the user's <mark> wraps).
+function sanitizeChatHtml(html) {
+  return String(html)
+    .replace(/<script[\s\S]*?<\/script\s*>/gi, '')
+    .replace(/<style[\s\S]*?<\/style\s*>/gi, '')
+    .replace(/<\/?(iframe|object|embed|form|link|meta|base|applet)\b[^>]*>/gi, '')
+    .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
+    .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
+    .replace(/javascript\s*:/gi, '');
+}
+
+function escapeHtmlText(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+app.post('/api/export-conversation', async (req, res) => {
+  const { conversationId, format, blocks } = req.body || {};
+  if (!conversationId) return res.status(400).json({ error: 'Missing conversationId' });
+  const fmt = (format === 'pdf') ? 'pdf' : 'md';
+  if (fmt === 'pdf' && (!Array.isArray(blocks) || !blocks.length)) {
+    return res.status(422).json({ error: 'Nothing to export — the chat is empty' });
+  }
+  // The PDF renders the client-side chat (model name sent along); the .md is
+  // composed from the stored conversation on the server.
+  let convName = 'conversation';
+  let storedConv = null;
+  if (fmt === 'pdf') {
+    convName = String((req.body && req.body.name) || '').trim() || 'conversation';
+  } else {
+    storedConv = loadConversation(conversationId);
+    if (!storedConv) return res.status(404).json({ error: 'Conversation not found' });
+    convName = storedConv.name || 'conversation';
+  }
+
+  const safeName = String(convName || 'conversation')
+    .replace(/[\\/:*?"<>|]+/g, '')
+    .replace(/\s+/g, '_')
+    .slice(0, 60);
+  const outDir = resolveExportsDir();
+  try {
+    if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+    fs.accessSync(outDir, fs.constants.W_OK);
+  } catch (e) {
+    return res.status(500).json({
+      error: `Export directory is not available: ${outDir} — check the path (or clear it for the default) in the sidebar configuration, then retry. (${e.message})`
+    });
+  }
+  const outBase = path.join(outDir, safeName + '_conversation');
+  try {
+    if (fmt === 'md') {
+      const file = outBase + '.md';
+      fs.writeFileSync(file, composeConversationMd(storedConv, new Date().toISOString().slice(0, 16).replace('T', ' ')), 'utf8');
+      return res.json({ ok: true, exported: [path.basename(file)], outDir });
+    }
+
+    // ---- PDF ----
+    let chromium = null;
+    try { ({ chromium } = require('playwright-core')); } catch (_) { /* not installed */ }
+    if (!chromium) return res.status(500).json({ error: 'playwright-core is not installed (npm install) — PDF export unavailable' });
+    const head = '<div class="head"><h1>' + escapeHtmlText(convName) + '</h1>' +
+      '<div class="meta">Exported: ' + escapeHtmlText(new Date().toISOString().slice(0, 16).replace('T', ' ')) +
+      ' · ' + blocks.length + ' messages · yellow = your highlights</div></div>';
+    const body = blocks.map((b) => {
+      const role = (b && b.role === 'user') ? 'You' : 'Assistant';
+      const model = (b && b.model) ? ' — ' + escapeHtmlText(String(b.model)) : '';
+      const cls = (b && b.role === 'user') ? 'msg u-block' : 'msg';
+      return '<div class="' + cls + '"><div class="msg-role">' + role + model + '</div>' +
+        '<div class="' + ((b && b.role === 'user') ? 'u' : 'md') + '">' + sanitizeChatHtml(b.html || '') + '</div></div>';
+    }).join('\n');
+    const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' + PDF_BLOCK_CSS + '</style></head>' +
+      '<body>' + head + body + '</body></html>';
+
+    const file = outBase + '.pdf';
+    const browser = await chromium.launch({ channel: 'msedge', headless: true });
+    try {
+      const page = await browser.newPage();
+      await page.setContent(html, { waitUntil: 'load' });
+      const buf = await page.pdf({
+        format: 'A4',
+        printBackground: true,
+        margin: { top: '16mm', bottom: '16mm', left: '15mm', right: '15mm' }
+      });
+      fs.writeFileSync(file, buf);
+    } finally {
+      await browser.close();
+    }
+    return res.json({ ok: true, exported: [path.basename(file)], outDir });
+  } catch (e) {
+    return res.status(500).json({ error: 'Conversation export failed: ' + e.message });
+  }
+});
+
 // ---- Bulk analysis (offer file -> parsed offers -> automated conversations) ----
 const METRICS_FILE = path.join(DATA_DIR, 'metrics.json');
 
@@ -3139,6 +3281,8 @@ if (require.main !== module) {
     jobEnrichResults,
     jobFetchHtmlSource,
     jobFetchSource,
+    composeConversationMd,
+    sanitizeChatHtml,
     JOB_SOURCES
   };
 } else {

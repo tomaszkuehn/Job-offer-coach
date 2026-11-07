@@ -200,6 +200,45 @@ test('POST /api/config persists exportsDir and GET returns it', async () => {
   assert.strictEqual(cfg2.exportsDir, 'rel-exports');
 });
 
+test('POST /api/export-conversation writes an .md transcript to exportsDir', async () => {
+  const dir = path.join(SANDBOX, 'conv-exports');
+  await fetch(BASE + '/api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ exportsDir: dir })
+  });
+  const r = await fetch(BASE + '/api/export-conversation', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ conversationId: 'testconv000001', format: 'md' })
+  });
+  assert.strictEqual(r.status, 200);
+  const data = await r.json();
+  assert.ok(data.ok);
+  const convData = await (await fetch(BASE + '/api/conversations/testconv000001')).json();
+  const safe = String(convData.name).replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, '_').slice(0, 60);
+  assert.deepStrictEqual(data.exported, [safe + '_conversation.md']);
+  assert.ok(data.outDir.startsWith(SANDBOX), 'sandbox exports dir used');
+  const file = path.join(data.outDir, data.exported[0]);
+  const md = fs.readFileSync(file, 'utf8');
+  assert.match(md, new RegExp('^# ' + convData.name.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&') + '\n'));
+  assert.match(md, /## You\n\nEmbedded Engineer\nACME\nBerlin/);
+  assert.match(md, /## Assistant\n\nANALIZA\n/);
+  assert.match(md, /2 messages/);
+  // Missing conversation -> 404, missing id -> 400
+  assert.strictEqual((await fetch(BASE + '/api/export-conversation', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ conversationId: 'nope', format: 'md' })
+  })).status, 404);
+  assert.strictEqual((await fetch(BASE + '/api/export-conversation', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ format: 'md' })
+  })).status, 400);
+  // PDF without blocks -> 422
+  assert.strictEqual((await fetch(BASE + '/api/export-conversation', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ conversationId: 'testconv000001', format: 'pdf', blocks: [] })
+  })).status, 422);
+});
+
 test('GET /api/fs/roots and /api/fs/list browse the filesystem', async () => {
   const r = await fetch(BASE + '/api/fs/roots');
   const { roots } = await r.json();

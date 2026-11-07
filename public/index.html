@@ -531,6 +531,10 @@
     <button class="btn" id="saveBtn" style="width:100%">Save configuration</button>
     <div class="status" id="saveStatus"></div>
     <button class="btn secondary" id="exportBtn" style="width:100%; margin-top:8px" title="Extract CV and Cover Letters from the last application package in this conversation and convert them to ODT (requires pandoc)">Export CV & Cover Letter (ODT)</button>
+    <div style="display:flex; gap:8px; margin-top:8px">
+      <button class="btn secondary" id="exportMdBtn" style="flex:1" title="Export this conversation transcript as a Markdown file">Export .md</button>
+      <button class="btn secondary" id="exportPdfBtn" style="flex:1" title="Export the conversation as seen in the chat as PDF (yellow user highlights are preserved)">Export PDF</button>
+    </div>
     <div class="status" id="exportStatus"></div>
   </aside>
 
@@ -2096,6 +2100,81 @@ let streamingActive = false; // a model response is being streamed
         status.style.color = '#a12b2b';
         status.textContent = 'Export failed: ' + e.message;
         clearLater(6000);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    // Export the whole conversation transcript — plain .md (stored messages)
+    // or a WYSIWYG PDF of the chat DOM (keeps the yellow user highlights).
+    const exportStatus = document.getElementById('exportStatus');
+    function exportNote(text, color, ms) {
+      exportStatus.textContent = text;
+      exportStatus.style.color = color || '';
+      if (ms) setTimeout(() => { if (exportStatus.textContent === text) { exportStatus.textContent = ''; exportStatus.style.color = ''; } }, ms);
+    }
+    function requireConversation() {
+      if (currentConvId) return true;
+      exportNote('Save the conversation first — there is nothing to export yet.', '#b25e09', 4000);
+      return false;
+    }
+    document.getElementById('exportMdBtn').addEventListener('click', async () => {
+      if (!requireConversation()) return;
+      const btn = document.getElementById('exportMdBtn');
+      btn.disabled = true;
+      exportNote('Exporting…');
+      try {
+        const res = await fetch('/api/export-conversation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversationId: currentConvId, format: 'md' })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          exportNote('Exported: ' + data.exported.join(', ') + ' → ' + data.outDir, '#1e7e34', 15000);
+        } else {
+          exportNote(data.error || 'Export failed', '#a12b2b', 8000);
+        }
+      } catch (e) {
+        exportNote('Export failed: ' + e.message, '#a12b2b', 8000);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    document.getElementById('exportPdfBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('exportPdfBtn');
+      const msgs = document.querySelectorAll('#chat > .msg');
+      if (!msgs.length) {
+        exportNote('The chat is empty — nothing to export.', '#b25e09', 4000);
+        return;
+      }
+      btn.disabled = true;
+      exportNote('Rendering PDF…');
+      const blocks = Array.prototype.map.call(msgs, (el) => {
+        const role = el.classList.contains('user') ? 'user' : 'assistant';
+        const badge = el.querySelector('.model-badge');
+        const inner = el.querySelector('.md');
+        return { role, model: badge ? badge.textContent : '', html: inner ? inner.innerHTML : el.innerHTML };
+      });
+      try {
+        const res = await fetch('/api/export-conversation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            conversationId: currentConvId || '',
+            format: 'pdf',
+            name: currentConvName || 'Conversation',
+            blocks
+          })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          exportNote('Exported: ' + data.exported.join(', ') + ' → ' + data.outDir, '#1e7e34', 15000);
+        } else {
+          exportNote(data.error || 'Export failed', '#a12b2b', 10000);
+        }
+      } catch (e) {
+        exportNote('Export failed: ' + e.message, '#a12b2b', 10000);
       } finally {
         btn.disabled = false;
       }

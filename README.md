@@ -47,6 +47,7 @@ The RAG list in the UI shows **only the files attached to the current conversati
 
 - Node.js 18+ (uses the global `fetch`)
 - [pandoc](https://pandoc.dev) on PATH — only for the ODT export feature
+- Microsoft Edge — only for the PDF conversation export (headless print via `playwright-core`)
 
 ## Running the app
 
@@ -161,6 +162,24 @@ Limitations worth knowing:
 - **Bayt.com** and **GulfTalent** are not wired: both answer with `403` to a plain server-side request (Cloudflare) and would need a headless browser.
 - The two new sources never bypass the normal pipeline: pre-filtering by keywords/location/workplace, the AI matching step and the bulk-import format stay exactly the same.
 
+### Exporting a conversation (.md / .pdf)
+
+Two sidebar buttons export the **whole conversation transcript**:
+
+- **"Export .md"** — composes a Markdown file from the stored messages on the
+  server (`# conversation title`, one `## You` / `## Assistant` section per
+  message with `---` separators). Highlights are not part of the .md
+  (they live only in the chat DOM).
+- **"Export PDF"** — a WYSIWYG print of the chat as currently rendered: the
+  browser serializes the rendered message blocks (including the user's yellow
+  `<mark>` **highlights** — they are DOM-only, so the PDF captures exactly
+  what is visible right now) and the server prints them to an A4 PDF with
+  **headless Edge** (`playwright-core`, `channel: 'msedge'`; requires Edge on
+  the system). Tables, code blocks and the model badge are styled for print.
+
+Both files land in the configured export directory as
+`<conversation>_conversation.md` / `.pdf`.
+
 ### Exporting CV & Cover Letters (ODT)
 
 When the model produces an application package (CV + cover letter sections),
@@ -256,6 +275,7 @@ on PATH).
 | POST | `/api/conversations/:id/tags/analyze` | Suggest tags from conversation content (does not save) |
 | DELETE | `/api/conversations/:id` | Delete a conversation |
 | POST | `/api/export-package` | Extract CV + cover letters from the latest package in a conversation and convert them to ODT (`{ conversationId }`); returns `207` with a `failed` list on partial success, `500` when the export directory is unavailable |
+| POST | `/api/export-conversation` | Export a whole conversation: `format: 'md'` composes a Markdown transcript server-side; `format: 'pdf'` prints the client-rendered chat (with `<mark>` highlights) to A4 via headless Edge — `{ conversationId, format, blocks, name }` |
 | POST | `/api/bulk/parse` | Parse an uploaded offer file (multipart `file`; CSV export / HTML snapshots / plain text); returns `{ offers: [{ title, company, location, url, description }] }` |
 | POST | `/api/bulk/run` | Run bulk analysis (`{ offers, modelIndex }`); NDJSON progress events `start` / `offer-start` / `offer-done` / `offer-failed` / `done` |
 | POST | `/api/job-search/preview` | Fetch offers from the internet and build AI prompts — no model call; NDJSON (`source-start` / `source-done` / `source-failed` / `prefilter` / `preview`), `searchId` caches the pool 30 min |
